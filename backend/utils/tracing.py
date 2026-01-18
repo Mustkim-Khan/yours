@@ -26,6 +26,10 @@ langsmith_client = None
 # Flag to disable nested tracing inside agents
 _tracing_disabled_context = False
 
+# Session-based trace context storage
+# Maps session_id -> root_trace_id for unified tracing across requests
+_session_trace_context: Dict[str, str] = {}
+
 
 def init_langsmith():
     """Initialize LangSmith client with API key"""
@@ -43,6 +47,21 @@ def init_langsmith():
     return False
 
 
+def set_session_trace(session_id: str, trace_id: str) -> None:
+    """Store the root trace ID for a session (for unified tracing)"""
+    _session_trace_context[session_id] = trace_id
+
+
+def get_session_trace(session_id: str) -> Optional[str]:
+    """Get the root trace ID for a session"""
+    return _session_trace_context.get(session_id)
+
+
+def clear_session_trace(session_id: str) -> None:
+    """Clear the trace context for a session (call when order completes)"""
+    _session_trace_context.pop(session_id, None)
+
+
 def get_trace_id() -> Optional[str]:
     """Get the current LangSmith trace ID"""
     try:
@@ -52,6 +71,7 @@ def get_trace_id() -> Optional[str]:
     except:
         pass
     return None
+
 
 
 @contextmanager
@@ -182,25 +202,66 @@ def agent_trace(agent_name: str, model_name: str):
     return decorator
 
 
-
 def orchestrator_trace(func: Callable) -> Callable:
     """
     ROOT trace for OrchestratorAgent.
     This is the parent span that contains all agent chains.
+    
+    For session-based unified tracing:
+    - First request creates a root trace
+    - Continuation requests (confirm) create child spans under the same session
     """
     @wraps(func)
-    @ls_traceable(
-        name="OrchestratorAgent",
-        run_type="chain",
-        metadata={
-            "role": "orchestrator",
-            "agent_name": "OrchestratorAgent",
-            "type": "root"
-        },
-        tags=["orchestrator", "root"]
-    )
     async def async_wrapper(*args, **kwargs):
-        result = await func(*args, **kwargs)
+        # Extract session_id from request argument
+        session_id = None
+        if args and len(args) > 1:
+            request = args[1]  # args[0] is self, args[1] is request
+            if hasattr(request, 'session_id'):
+                session_id = request.session_id
+        
+        # Check if this is a continuation of an existing trace
+        existing_trace = get_session_trace(session_id) if session_id else None
+        
+        if existing_trace:
+            # This is a continuation - create a child span instead of new root
+            @ls_traceable(
+                name="OrchestratorAgent",
+                run_type="chain",
+                metadata={
+                    "role": "orchestrator",
+                    "agent_name": "OrchestratorAgent",
+                    "type": "continuation",
+                    "parent_trace": existing_trace
+                },
+                tags=["orchestrator", "continuation"]
+            )
+            async def traced_continuation(*a, **kw):
+                return await func(*a, **kw)
+            
+            result = await traced_continuation(*args, **kwargs)
+        else:
+            # This is a new flow - create root trace
+            @ls_traceable(
+                name="OrchestratorAgent",
+                run_type="chain",
+                metadata={
+                    "role": "orchestrator",
+                    "agent_name": "OrchestratorAgent",
+                    "type": "root"
+                },
+                tags=["orchestrator", "root"]
+            )
+            async def traced_root(*a, **kw):
+                return await func(*a, **kw)
+            
+            result = await traced_root(*args, **kwargs)
+            
+            # Store the trace ID for this session for future continuations
+            if session_id:
+                trace_id = get_trace_id()
+                if trace_id:
+                    set_session_trace(session_id, trace_id)
         
         # Add routing info to trace
         try:
@@ -213,6 +274,12 @@ def orchestrator_trace(func: Callable) -> Callable:
                 }
         except:
             pass
+        
+        # Clear trace context if order is complete
+        if session_id and result:
+            final_action = getattr(result, 'final_action', None)
+            if final_action and str(final_action) == 'AgentAction.CREATE_ORDER':
+                clear_session_trace(session_id)
         
         return result
     

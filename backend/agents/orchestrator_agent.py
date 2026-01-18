@@ -23,7 +23,10 @@ from models.schemas import (
     OrderConfirmationData,
     PrescriptionUploadData,
 )
-from utils.tracing import orchestrator_span, child_agent_span, get_trace_id
+from utils.tracing import (
+    orchestrator_span, child_agent_span, get_trace_id,
+    set_session_trace, get_session_trace, clear_session_trace
+)
 
 from .pharmacist_agent import PharmacistAgent
 from .inventory_agent import InventoryAgent
