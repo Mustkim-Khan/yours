@@ -84,6 +84,9 @@ class AgentOutput(BaseModel):
     evidence: List[str] = Field(default_factory=list, description="Exact data points from context")
     message: Optional[str] = Field(default=None, description="User-facing message (PharmacistAgent only)")
     next_agent: Optional[str] = Field(default=None, description="Next agent name or null")
+    # UI Card fields - optional, used by PharmacistAgent for UI card rendering
+    ui_card: Optional[str] = Field(default=None, description="Type of UI card: order_preview, order_confirmation, prescription_upload")
+    ui_data: Optional[dict] = Field(default=None, description="Data for the UI card component")
 
 
 # ============ Agent Action Types ============

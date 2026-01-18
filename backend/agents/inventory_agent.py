@@ -13,7 +13,7 @@ from langchain_core.tools import tool
 from langchain.agents import AgentExecutor, create_openai_tools_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from models.schemas import Decision, AgentOutput, Medicine
-from utils.tracing import child_agent_span, get_trace_id
+from utils.tracing import agent_trace, get_trace_id, create_non_traced_llm
 
 
 # ============ MODEL CONFIG ============
@@ -32,18 +32,16 @@ class InventoryAgent:
 
     def __init__(self, model_name: str = MODEL_NAME, temperature: float = TEMPERATURE):
         self.agent_name = "InventoryAgent"
-        self.llm = ChatOpenAI(
-            model=model_name,
-            temperature=temperature,
-            api_key=os.getenv("OPENAI_API_KEY")
-        )
+        self.model_name = model_name
+        # Use non-traced LLM to prevent LLM calls from appearing in traces
+        self.llm = create_non_traced_llm(model_name, temperature)
         self._data_service = None
 
     def set_data_service(self, data_service):
         """Inject data service"""
         self._data_service = data_service
 
-    @child_agent_span("InventoryAgent", "gpt-5-mini")
+    @agent_trace("InventoryAgent", "gpt-5-mini")
     async def check_stock(
         self, 
         medicine_name: str, 
@@ -118,10 +116,14 @@ class InventoryAgent:
         # In stock
         stock_status = "low_stock" if match.stock_level <= 20 else "in_stock"
         
+        # Build detailed reason (2 lines as required)
+        reason_line1 = f"{match.medicine_name} {match.strength} is available ({stock_status})."
+        reason_line2 = f"Stock verified. Routing to PolicyAgent for compliance check."
+        
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
-            reason=f"{match.medicine_name} {match.strength} is available ({stock_status})",
+            reason=f"{reason_line1} {reason_line2}",
             evidence=[
                 f"medicine_id={match.medicine_id}",
                 f"medicine_name={match.medicine_name}",
@@ -132,10 +134,10 @@ class InventoryAgent:
                 f"max_quantity={match.max_quantity_per_order}"
             ],
             message=None,
-            next_agent="PolicyAgent" if match.prescription_required else None
+            next_agent="PolicyAgent"  # ALWAYS route to PolicyAgent
         )
 
-    @child_agent_span("InventoryAgent", "gpt-5-mini")
+    @agent_trace("InventoryAgent", "gpt-5-mini")
     async def search(self, query: str) -> AgentOutput:
         """Search medicines by name."""
         if not self._data_service:
@@ -177,7 +179,7 @@ class InventoryAgent:
             next_agent=None
         )
 
-    @child_agent_span("InventoryAgent", "gpt-5-mini")
+    @agent_trace("InventoryAgent", "gpt-5-mini")
     async def get_pricing(self, medicine_id: str) -> AgentOutput:
         """Get pricing for a medicine."""
         if not self._data_service:

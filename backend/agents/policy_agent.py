@@ -11,7 +11,7 @@ from typing import Optional, Dict, Any, List
 from langchain_openai import ChatOpenAI
 
 from models.schemas import Decision, AgentOutput
-from utils.tracing import child_agent_span, get_trace_id
+from utils.tracing import agent_trace, get_trace_id, create_non_traced_llm
 
 
 # ============ MODEL CONFIG ============
@@ -49,18 +49,16 @@ class PolicyAgent:
 
     def __init__(self, model_name: str = MODEL_NAME, temperature: float = TEMPERATURE):
         self.agent_name = "PolicyAgent"
-        self.llm = ChatOpenAI(
-            model=model_name,
-            temperature=temperature,
-            api_key=os.getenv("OPENAI_API_KEY")
-        )
+        self.model_name = model_name
+        # Use non-traced LLM to prevent LLM calls from appearing in traces
+        self.llm = create_non_traced_llm(model_name, temperature)
         self._data_service = None
 
     def set_data_service(self, data_service):
         """Inject data service"""
         self._data_service = data_service
 
-    @child_agent_span("PolicyAgent", "gpt-5.2")
+    @agent_trace("PolicyAgent", "gpt-5.2")
     async def check_prescription_required(self, medicine_name: str) -> AgentOutput:
         """
         Check if medicine requires prescription.
@@ -109,20 +107,25 @@ class PolicyAgent:
             )
         
         # OTC - can proceed
+        # Build detailed reason (2 lines as required)
+        reason_line1 = f"{medicine_name} is available over-the-counter."
+        reason_line2 = f"No prescription required. Approved for fulfillment."
+        
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
-            reason=f"{medicine_name} is available over-the-counter",
+            reason=f"{reason_line1} {reason_line2}",
             evidence=[
                 f"medicine_name={medicine_name}",
                 f"requires_prescription=False",
-                f"controlled_substance=False"
+                f"controlled_substance=False",
+                f"policy_check=PASSED"
             ],
             message=None,
             next_agent="FulfillmentAgent"
         )
 
-    @child_agent_span("PolicyAgent", "gpt-5.2")
+    @agent_trace("PolicyAgent", "gpt-5.2")
     async def validate_quantity(self, medicine_name: str, quantity: int) -> AgentOutput:
         """
         Validate if quantity is within limits.
@@ -174,7 +177,7 @@ class PolicyAgent:
             next_agent="FulfillmentAgent"
         )
 
-    @child_agent_span("PolicyAgent", "gpt-5.2")
+    @agent_trace("PolicyAgent", "gpt-5.2")
     async def check_drug_interactions(self, medicines: List[str]) -> AgentOutput:
         """
         Check for drug interactions between medicines.

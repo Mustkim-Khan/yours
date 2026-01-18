@@ -10,10 +10,9 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 
 from langchain_openai import ChatOpenAI
-from langsmith import traceable
 
 from models.schemas import Decision, AgentOutput
-from utils.tracing import agent_span, get_trace_id
+from utils.tracing import agent_trace, get_trace_id, create_non_traced_llm
 
 
 # ============ MODEL CONFIG ============
@@ -42,18 +41,16 @@ class RefillPredictionAgent:
 
     def __init__(self, model_name: str = MODEL_NAME, temperature: float = TEMPERATURE):
         self.agent_name = "RefillPredictionAgent"
-        self.llm = ChatOpenAI(
-            model=model_name,
-            temperature=temperature,
-            api_key=os.getenv("OPENAI_API_KEY")
-        )
+        self.model_name = model_name
+        # Use non-traced LLM to prevent LLM calls from appearing in traces
+        self.llm = create_non_traced_llm(model_name, temperature)
         self._data_service = None
 
     def set_data_service(self, data_service):
         """Inject data service"""
         self._data_service = data_service
 
-    @traceable(name="RefillPredictionAgent.predict_refills", run_type="chain")
+    @agent_trace("RefillPredictionAgent", "gpt-5-mini")
     async def get_refill_predictions(self, patient_id: str) -> AgentOutput:
         """
         Get refill predictions for a patient.
@@ -119,7 +116,7 @@ class RefillPredictionAgent:
             next_agent=None
         )
 
-    @traceable(name="RefillPredictionAgent.check_eligibility", run_type="chain")
+    @agent_trace("RefillPredictionAgent", "gpt-5-mini")
     async def check_refill_eligibility(
         self, 
         patient_id: str, 
@@ -209,7 +206,7 @@ class RefillPredictionAgent:
             next_agent="InventoryAgent"
         )
 
-    @traceable(name="RefillPredictionAgent.calculate_adherence", run_type="chain")
+    @agent_trace("RefillPredictionAgent", "gpt-5-mini")
     async def calculate_adherence(self, patient_id: str) -> AgentOutput:
         """
         Calculate medication adherence score for patient.

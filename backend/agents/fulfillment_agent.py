@@ -17,7 +17,7 @@ from models.schemas import (
     Decision, AgentOutput, OrderStatus, 
     OrderConfirmationData, OrderPreviewData, OrderPreviewItem
 )
-from utils.tracing import child_agent_span, get_trace_id
+from utils.tracing import agent_trace, get_trace_id, create_non_traced_llm
 
 
 # ============ MODEL CONFIG ============
@@ -36,11 +36,9 @@ class FulfillmentAgent:
 
     def __init__(self, model_name: str = MODEL_NAME, temperature: float = TEMPERATURE):
         self.agent_name = "FulfillmentAgent"
-        self.llm = ChatOpenAI(
-            model=model_name,
-            temperature=temperature,
-            api_key=os.getenv("OPENAI_API_KEY")
-        )
+        self.model_name = model_name
+        # Use non-traced LLM to prevent LLM calls from appearing in traces
+        self.llm = create_non_traced_llm(model_name, temperature)
         self._data_service = None
         self._orders: Dict[str, dict] = {}
 
@@ -48,7 +46,7 @@ class FulfillmentAgent:
         """Inject data service"""
         self._data_service = data_service
 
-    @child_agent_span("FulfillmentAgent", "gpt-5-mini")
+    @agent_trace("FulfillmentAgent", "gpt-5-mini")
     async def create_order(
         self, 
         patient_id: str, 
@@ -111,10 +109,14 @@ class FulfillmentAgent:
         
         item_names = [i.get("medicine_name", "item") for i in items]
         
+        # Build detailed reason (2 lines as required)
+        reason_line1 = f"Order {order_id} created successfully for {len(items)} item(s)."
+        reason_line2 = f"Total: ${total_amount:.2f}. {delivery_estimate}. Warehouse notified."
+        
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
-            reason=f"Order {order_id} created successfully",
+            reason=f"{reason_line1} {reason_line2}",
             evidence=[
                 f"order_id={order_id}",
                 f"patient_id={patient_id}",
@@ -144,7 +146,7 @@ class FulfillmentAgent:
         except Exception:
             return "skipped"
 
-    @child_agent_span("FulfillmentAgent", "gpt-5-mini")
+    @agent_trace("FulfillmentAgent", "gpt-5-mini")
     async def get_order_status(self, order_id: str) -> AgentOutput:
         """
         Get status of an order.
@@ -175,7 +177,7 @@ class FulfillmentAgent:
             next_agent=None
         )
 
-    @child_agent_span("FulfillmentAgent", "gpt-5-mini")
+    @agent_trace("FulfillmentAgent", "gpt-5-mini")
     async def cancel_order(self, order_id: str, reason: str = "") -> AgentOutput:
         """
         Cancel an order.
@@ -221,7 +223,7 @@ class FulfillmentAgent:
             next_agent=None
         )
 
-    @child_agent_span("FulfillmentAgent", "gpt-5-mini")
+    @agent_trace("FulfillmentAgent", "gpt-5-mini")
     async def generate_receipt(self, order_id: str) -> AgentOutput:
         """
         Generate receipt for an order.
@@ -254,7 +256,7 @@ class FulfillmentAgent:
             next_agent=None
         )
 
-    @child_agent_span("FulfillmentAgent", "gpt-5-mini")
+    @agent_trace("FulfillmentAgent", "gpt-5-mini")
     async def confirm_order(
         self,
         preview_data: OrderPreviewData,
