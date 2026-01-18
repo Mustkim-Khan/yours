@@ -2,12 +2,13 @@
 InventoryAgent - LangChain Agent Implementation
 Reads medicine_master.csv, validates medicine existence, checks stock, returns pricing.
 EMITS STANDARDIZED OUTPUT: {agent, decision, reason, evidence, message, next_agent}
-Uses: gpt-5.2 (precision-critical)
+Uses: gpt-5-mini (fast for inventory lookups)
 """
 
 import os
 from typing import Optional, Dict, Any, List
 
+from openai import AsyncOpenAI
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain.agents import AgentExecutor, create_openai_tools_agent
@@ -17,14 +18,14 @@ from utils.tracing import agent_trace, get_trace_id, create_non_traced_llm
 
 
 # ============ MODEL CONFIG ============
-MODEL_NAME = "gpt-5.2"  # Precision-critical agent
-TEMPERATURE = 0.2
+MODEL_NAME = "gpt-5-mini"  # Fast model for inventory lookups
+TEMPERATURE = 0.3
 
 
 class InventoryAgent:
     """
     InventoryAgent - Medicine inventory management.
-    Uses gpt-5.2 for precision.
+    Uses gpt-5-mini for fast inventory responses.
     
     EMITS STANDARDIZED OUTPUT:
     {agent, decision, reason, evidence, message, next_agent}
@@ -33,13 +34,17 @@ class InventoryAgent:
     def __init__(self, model_name: str = MODEL_NAME, temperature: float = TEMPERATURE):
         self.agent_name = "InventoryAgent"
         self.model_name = model_name
-        # Use non-traced LLM to prevent LLM calls from appearing in traces
+        self.temperature = temperature
+        # Direct OpenAI client for LLM calls
+        self.client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        # Legacy LangChain LLM (for compatibility)
         self.llm = create_non_traced_llm(model_name, temperature)
         self._data_service = None
 
     def set_data_service(self, data_service):
         """Inject data service"""
         self._data_service = data_service
+
 
     @agent_trace("InventoryAgent", "gpt-5-mini")
     async def check_stock(
@@ -120,6 +125,12 @@ class InventoryAgent:
         reason_line1 = f"{match.medicine_name} {match.strength} is available ({stock_status})."
         reason_line2 = f"Stock verified. Routing to PolicyAgent for compliance check."
         
+        # Generate dynamic message using LLM
+        llm_message = await self._generate_message(
+            context=f"Medicine: {match.medicine_name} {match.strength}, Status: {stock_status}",
+            task="Confirm medicine availability professionally"
+        )
+        
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
@@ -133,7 +144,7 @@ class InventoryAgent:
                 f"prescription_required={match.prescription_required}",
                 f"max_quantity={match.max_quantity_per_order}"
             ],
-            message=None,
+            message=llm_message,
             next_agent="PolicyAgent"  # ALWAYS route to PolicyAgent
         )
 
@@ -221,5 +232,32 @@ class InventoryAgent:
             next_agent=None
         )
 
+    async def _generate_message(self, context: str, task: str) -> str:
+        """
+        Generate a professional message using gpt-5-mini.
+        Used for creating natural language responses for inventory queries.
+        """
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful pharmacy inventory assistant. Generate concise, professional responses. Keep responses under 50 words."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Context: {context}\nTask: {task}\nGenerate a brief response:"
+                    }
+                ],
+                temperature=self.temperature,
+                max_tokens=100
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            # Fallback to simple message on error
+            return f"Inventory check complete. {task}"
+
     def get_trace_id(self) -> Optional[str]:
         return get_trace_id()
+

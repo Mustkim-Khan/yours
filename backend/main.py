@@ -171,7 +171,8 @@ class PrescriptionUploadResponse(BaseModel):
     agent_chain: list[str]
     order_id: Optional[str] = None
     trace_id: Optional[str] = None
-    ui_card_type: str = "order_confirmation"
+    ui_card_type: str = "order_preview"
+    order_preview: Optional[dict] = None
     order_confirmation: Optional[dict] = None
 
 
@@ -183,23 +184,22 @@ async def upload_prescription(request: PrescriptionUploadRequest):
     Flow:
     1. Accept prescription file (base64 or filename)
     2. Mark prescription as verified in session
-    3. Resume order flow - skip to FulfillmentAgent directly
-    4. Return order confirmation
-    
-    TRACE CONTINUITY:
-    - This call resumes under same trace context
-    - FulfillmentAgent appears as next span after PolicyAgent
-    - No duplicate agent calls
+    3. Return ORDER_PREVIEW (not confirmation yet)
+    4. User confirms preview → then order is created
     """
     try:
-        # Resume flow with prescription
+        # Resume flow with prescription - returns ORDER_PREVIEW
         result = await orchestrator.resume_with_prescription(
             session_id=request.session_id,
             medicine_id=request.medicine_id,
             prescription_verified=True
         )
         
-        # Prepare order confirmation data
+        # Prepare order preview data (not confirmation)
+        order_preview = None
+        if result.order_preview_data:
+            order_preview = result.order_preview_data.model_dump()
+        
         order_confirmation = None
         if result.order_confirmation_data:
             order_confirmation = result.order_confirmation_data.model_dump()
@@ -211,12 +211,14 @@ async def upload_prescription(request: PrescriptionUploadRequest):
             agent_chain=result.agent_chain,
             order_id=result.order_created,
             trace_id=result.trace_id,
-            ui_card_type=result.ui_card_type.value if result.ui_card_type else "order_confirmation",
+            ui_card_type=result.ui_card_type.value if result.ui_card_type else "order_preview",
+            order_preview=order_preview,
             order_confirmation=order_confirmation
         )
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prescription upload failed: {str(e)}")
+
 
 @app.get("/inventory/search")
 async def search_inventory(query: str = ""):

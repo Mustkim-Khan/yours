@@ -9,6 +9,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 
+from openai import AsyncOpenAI
 from langchain_openai import ChatOpenAI
 
 from models.schemas import Decision, AgentOutput
@@ -33,7 +34,7 @@ SUPPLY_DURATIONS = {
 class RefillPredictionAgent:
     """
     RefillPredictionAgent - Medication refill predictions.
-    Uses gpt-5-mini model.
+    Uses gpt-5-mini model for fast predictions.
     
     EMITS STANDARDIZED OUTPUT:
     {agent, decision, reason, evidence, message, next_agent}
@@ -42,13 +43,17 @@ class RefillPredictionAgent:
     def __init__(self, model_name: str = MODEL_NAME, temperature: float = TEMPERATURE):
         self.agent_name = "RefillPredictionAgent"
         self.model_name = model_name
-        # Use non-traced LLM to prevent LLM calls from appearing in traces
+        self.temperature = temperature
+        # Direct OpenAI client for LLM calls
+        self.client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        # Legacy LangChain LLM (for compatibility)
         self.llm = create_non_traced_llm(model_name, temperature)
         self._data_service = None
 
     def set_data_service(self, data_service):
         """Inject data service"""
         self._data_service = data_service
+
 
     @agent_trace("RefillPredictionAgent", "gpt-5-mini")
     async def get_refill_predictions(self, patient_id: str) -> AgentOutput:
@@ -98,21 +103,32 @@ class RefillPredictionAgent:
         
         # Determine decision based on urgency
         if urgent_count > 0:
+            # Generate urgent refill message using LLM
+            llm_message = await self._generate_message(
+                context=f"{urgent_count} medication(s) need refill within 7 days",
+                task="Generate a caring reminder about urgent medication refills"
+            )
             return AgentOutput(
                 agent=self.agent_name,
                 decision=Decision.SCHEDULED,
                 reason=f"{urgent_count} medication(s) need refill within 7 days",
                 evidence=evidence,
-                message=None,
+                message=llm_message,
                 next_agent="PharmacistAgent"
             )
+        
+        # Generate regular refill message using LLM
+        llm_message = await self._generate_message(
+            context=f"{len(refills)} medication(s) will need refill soon",
+            task="Generate a helpful refill status update"
+        )
         
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
             reason=f"{len(refills)} medication(s) will need refill soon",
             evidence=evidence,
-            message=None,
+            message=llm_message,
             next_agent=None
         )
 
@@ -264,5 +280,32 @@ class RefillPredictionAgent:
             next_agent=None
         )
 
+    async def _generate_message(self, context: str, task: str) -> str:
+        """
+        Generate a professional message using gpt-5-mini.
+        Used for creating natural language responses for refill predictions.
+        """
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful pharmacy refill assistant. Generate concise, caring messages about medication refills. Keep responses under 50 words."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Context: {context}\nTask: {task}\nGenerate a brief response:"
+                    }
+                ],
+                temperature=self.temperature,
+                max_tokens=100
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            # Fallback to simple message on error
+            return f"Refill check complete. {task}"
+
     def get_trace_id(self) -> Optional[str]:
         return get_trace_id()
+

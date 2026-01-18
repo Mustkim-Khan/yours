@@ -11,6 +11,7 @@ import httpx
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 
+from openai import AsyncOpenAI
 from langchain_openai import ChatOpenAI
 
 from models.schemas import (
@@ -28,7 +29,7 @@ TEMPERATURE = 0.3
 class FulfillmentAgent:
     """
     FulfillmentAgent - Order processing and fulfillment.
-    Uses gpt-5-mini model.
+    Uses gpt-5-mini model for fast order processing.
     
     EMITS STANDARDIZED OUTPUT:
     {agent, decision, reason, evidence, message, next_agent}
@@ -37,7 +38,10 @@ class FulfillmentAgent:
     def __init__(self, model_name: str = MODEL_NAME, temperature: float = TEMPERATURE):
         self.agent_name = "FulfillmentAgent"
         self.model_name = model_name
-        # Use non-traced LLM to prevent LLM calls from appearing in traces
+        self.temperature = temperature
+        # Direct OpenAI client for LLM calls
+        self.client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        # Legacy LangChain LLM (for compatibility)
         self.llm = create_non_traced_llm(model_name, temperature)
         self._data_service = None
         self._orders: Dict[str, dict] = {}
@@ -45,6 +49,7 @@ class FulfillmentAgent:
     def set_data_service(self, data_service):
         """Inject data service"""
         self._data_service = data_service
+
 
     @agent_trace("FulfillmentAgent", "gpt-5-mini")
     async def create_order(
@@ -113,6 +118,12 @@ class FulfillmentAgent:
         reason_line1 = f"Order {order_id} created successfully for {len(items)} item(s)."
         reason_line2 = f"Total: ${total_amount:.2f}. {delivery_estimate}. Warehouse notified."
         
+        # Generate dynamic confirmation message using LLM
+        llm_message = await self._generate_message(
+            context=f"Order {order_id} for {', '.join(item_names)}, Total: ${total_amount:.2f}, Delivery: {delivery_estimate}",
+            task="Generate a friendly order confirmation message"
+        )
+        
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
@@ -127,7 +138,7 @@ class FulfillmentAgent:
                 f"delivery_estimate={delivery_estimate}",
                 f"webhook_status={webhook_status}"
             ],
-            message=None,
+            message=llm_message,
             next_agent=None
         )
 
@@ -366,5 +377,32 @@ class FulfillmentAgent:
         
         return agent_output, order_confirmation, summary
 
+    async def _generate_message(self, context: str, task: str) -> str:
+        """
+        Generate a professional message using gpt-5-mini.
+        Used for creating natural language responses for order operations.
+        """
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful pharmacy fulfillment assistant. Generate concise, professional order confirmation messages. Keep responses under 50 words."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Context: {context}\nTask: {task}\nGenerate a brief response:"
+                    }
+                ],
+                temperature=self.temperature,
+                max_tokens=100
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            # Fallback to simple message on error
+            return f"Order processed. {task}"
+
     def get_trace_id(self) -> Optional[str]:
         return get_trace_id()
+

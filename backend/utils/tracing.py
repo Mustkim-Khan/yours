@@ -73,10 +73,12 @@ def is_tracing_disabled() -> bool:
 
 def agent_trace(agent_name: str, model_name: str):
     """
-    STRICT agent tracing decorator.
-    Creates ONE span per agent with all internal steps as metadata.
+    STRICT agent tracing decorator - CHILD SPANS ONLY.
+    Creates a child span under the current parent run tree.
     
-    CRITICAL: All LLM calls and tool calls inside this span are NOT traced.
+    CRITICAL: This decorator only creates a span if called within
+    an existing trace context (e.g., under OrchestratorAgent).
+    If no parent exists, executes without tracing to avoid orphan roots.
     
     Usage:
         @agent_trace("PharmacistAgent", "gpt-5.2")
@@ -88,24 +90,32 @@ def agent_trace(agent_name: str, model_name: str):
         async def async_wrapper(*args, **kwargs):
             start_time = time.time()
             
-            # Create agent span with metadata
-            @ls_traceable(
-                name=f"{agent_name} ({model_name})",
-                run_type="chain",
-                metadata={
-                    "agent_name": agent_name,
-                    "model_used": model_name,
-                    "type": "agent"
-                },
-                tags=[agent_name, model_name, "agent"]
-            )
-            async def traced_agent(*a, **kw):
-                # Disable nested tracing for LLM calls inside this agent
-                with disable_nested_tracing():
-                    result = await func(*a, **kw)
-                return result
+            # Check if we're inside a parent trace context
+            parent_run = get_current_run_tree()
             
-            result = await traced_agent(*args, **kwargs)
+            if parent_run is not None:
+                # We have a parent - create a child span
+                @ls_traceable(
+                    name=f"{agent_name} ({model_name})",
+                    run_type="chain",
+                    metadata={
+                        "agent_name": agent_name,
+                        "model_used": model_name,
+                        "type": "agent"
+                    },
+                    tags=[agent_name, model_name, "agent"]
+                )
+                async def traced_agent(*a, **kw):
+                    # Disable nested tracing for LLM calls inside this agent
+                    with disable_nested_tracing():
+                        result = await func(*a, **kw)
+                    return result
+                
+                result = await traced_agent(*args, **kwargs)
+            else:
+                # No parent trace - execute without creating orphan root
+                with disable_nested_tracing():
+                    result = await func(*args, **kwargs)
             
             duration_ms = int((time.time() - start_time) * 1000)
             
@@ -140,21 +150,29 @@ def agent_trace(agent_name: str, model_name: str):
         def sync_wrapper(*args, **kwargs):
             start_time = time.time()
             
-            @ls_traceable(
-                name=f"{agent_name} ({model_name})",
-                run_type="chain",
-                metadata={
-                    "agent_name": agent_name,
-                    "model_used": model_name,
-                    "type": "agent"
-                },
-                tags=[agent_name, model_name, "agent"]
-            )
-            def traced_agent(*a, **kw):
-                with disable_nested_tracing():
-                    return func(*a, **kw)
+            # Check if we're inside a parent trace context
+            parent_run = get_current_run_tree()
             
-            return traced_agent(*args, **kwargs)
+            if parent_run is not None:
+                @ls_traceable(
+                    name=f"{agent_name} ({model_name})",
+                    run_type="chain",
+                    metadata={
+                        "agent_name": agent_name,
+                        "model_used": model_name,
+                        "type": "agent"
+                    },
+                    tags=[agent_name, model_name, "agent"]
+                )
+                def traced_agent(*a, **kw):
+                    with disable_nested_tracing():
+                        return func(*a, **kw)
+                
+                return traced_agent(*args, **kwargs)
+            else:
+                # No parent trace - execute without creating orphan root
+                with disable_nested_tracing():
+                    return func(*args, **kwargs)
         
         import asyncio
         if asyncio.iscoroutinefunction(func):
@@ -162,6 +180,7 @@ def agent_trace(agent_name: str, model_name: str):
         return sync_wrapper
     
     return decorator
+
 
 
 def orchestrator_trace(func: Callable) -> Callable:

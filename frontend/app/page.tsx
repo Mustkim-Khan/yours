@@ -24,6 +24,7 @@ interface Message {
     aiAnnotation?: string;
     badges?: { label: string; color: string }[];
     expandable?: boolean;
+    prescriptionUpload?: any;
 }
 
 // Helper function to format markdown content (bold, newlines)
@@ -47,10 +48,12 @@ export default function ChatPage() {
     const [latestTraceUrl, setLatestTraceUrl] = useState<string | null>(null);
     const [autoSaveChats, setAutoSaveChats] = useState(true);
     const [desktopNotifications, setDesktopNotifications] = useState(false);
+    const [prescriptionVerified, setPrescriptionVerified] = useState(false); // Track if prescription is verified
     // const [isPatientDropdownOpen, setIsPatientDropdownOpen] = useState(false); // Removed
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
+    const prescriptionCalledRef = useRef<Set<string>>(new Set()); // Track which messages have had prescription API called
     // const dropdownRef = useRef<HTMLDivElement>(null); // Removed
 
     useEffect(() => {
@@ -61,6 +64,10 @@ export default function ChatPage() {
     useEffect(() => {
         if (selectedPatient) {
             fetchChatHistory(selectedPatient.patient_id);
+
+            // Reset prescription state for new patient
+            setPrescriptionVerified(false);
+            prescriptionCalledRef.current.clear();
 
             // Load saved entities for this patient (Keeping local for entities as they are transient view state)
             const savedEntities = localStorage.getItem(`patient_entities_${selectedPatient.patient_id}`);
@@ -227,6 +234,7 @@ export default function ChatPage() {
                 aiAnnotation: data.ai_annotation,
                 badges: data.badges,
                 expandable: true,
+                prescriptionUpload: data.prescription_upload,
             };
 
             setMessages(prev => [...prev, assistantMessage]);
@@ -502,37 +510,70 @@ export default function ChatPage() {
                                     </div>
                                 )}
 
-                                {/* Order Confirmation Card */}
+                                {/* Standalone Prescription Upload Card - only show if NOT verified yet */}
+                                {message.prescriptionUpload && !message.orderPreview && !prescriptionVerified && (
+                                    <div className="mt-3">
+                                        <PrescriptionUploadCard
+                                            medicineName={message.prescriptionUpload.medicine_name || 'This medicine'}
+                                            onUpload={async (file) => {
+                                                // PrescriptionUploadCard calls onUpload twice:
+                                                // 1. First call = file upload (just mark as uploaded in UI)
+                                                // 2. Second call = Continue with Order (call API)
+                                                const callKey = `${message.id}-${file.name}`;
+                                                if (prescriptionCalledRef.current.has(callKey)) {
+                                                    // This is the second call - actually call the API
+                                                    try {
+                                                        const res = await fetch('/api/prescription/upload', {
+                                                            method: 'POST',
+                                                            headers: { 'Content-Type': 'application/json' },
+                                                            body: JSON.stringify({
+                                                                session_id: `session-${selectedPatient?.patient_id}`,
+                                                                medicine_id: message.prescriptionUpload.medicine_id || '',
+                                                                prescription_file: file.name,
+                                                            }),
+                                                        });
+                                                        const data = await res.json();
+                                                        if (data.success && data.order_preview) {
+                                                            // Mark prescription as verified - hides all PrescriptionUploadCards
+                                                            setPrescriptionVerified(true);
+                                                            // Add message with Order Preview Card
+                                                            const previewMsg: Message = {
+                                                                id: Date.now().toString(),
+                                                                role: 'assistant',
+                                                                content: data.message || 'Prescription verified! Your order is ready for confirmation.',
+                                                                timestamp: new Date(),
+                                                                orderPreview: data.order_preview,
+                                                            };
+                                                            setMessages(prev => [...prev, previewMsg]);
+                                                        }
+                                                    } catch (error) {
+                                                        console.error('Prescription upload failed:', error);
+                                                    }
+                                                } else {
+                                                    // First call - just mark as called, don't call API
+                                                    prescriptionCalledRef.current.add(callKey);
+                                                }
+                                            }}
+                                            onSkip={() => sendMessage('cancel')}
+                                        />
+                                    </div>
+                                )}
+
+                                {/* Order Preview Card - always show Confirm/Cancel buttons */}
                                 {message.orderPreview && (() => {
                                     const subtotal = message.orderPreview.total_amount || 0;
-                                    const tax = subtotal * 0.05;
-                                    const total = subtotal + tax;
+                                    // Use the total directly from backend (already includes tax/fees)
+                                    const total = subtotal;
                                     const totalQuantity = message.orderPreview.items?.reduce((sum: number, item: any) => sum + (item.quantity || 0), 0) || 1;
                                     const pricePerUnit = totalQuantity > 0 ? subtotal / totalQuantity : 0;
-                                    const requiresPrescription = message.orderPreview.requires_prescription ||
-                                        message.orderPreview.items?.some((item: any) => item.prescription_required);
-                                    const prescriptionMedicines = message.orderPreview.items?.filter((item: any) => item.prescription_required).map((item: any) => item.medicine_name) || [];
 
                                     return (
                                         <div className="mt-3 space-y-3 max-w-sm">
-                                            {/* Prescription Upload Card - Show if prescription required */}
-                                            {requiresPrescription && (
-                                                <PrescriptionUploadCard
-                                                    medicineName={prescriptionMedicines.join(', ') || message.orderPreview.items?.[0]?.medicine_name || 'This medicine'}
-                                                    onUpload={(file) => {
-                                                        console.log('Prescription uploaded:', file.name);
-                                                        // In a real app, upload to backend and then confirm
-                                                        sendMessage('confirm');
-                                                    }}
-                                                    onSkip={() => sendMessage('cancel')}
-                                                />
-                                            )}
-
-                                            {/* Order Card with Left Accent Border */}
+                                            {/* Order Card with Left Accent Border - Always show with Confirm/Cancel */}
                                             <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg border-l-4 border-l-indigo-600 border border-gray-200 dark:border-gray-700 p-4 transition-colors duration-300">
                                                 <div className="mb-3">
                                                     <h4 className="font-semibold text-gray-900 dark:text-white">
-                                                        {requiresPrescription ? 'Order Summary' : 'Confirm Your Order'}
+                                                        Confirm Your Order
                                                     </h4>
                                                     <p className="text-xs text-gray-500 dark:text-gray-400">Review details before confirming home delivery</p>
                                                 </div>
@@ -599,23 +640,21 @@ export default function ChatPage() {
                                                     </div>
                                                 </div>
 
-                                                {/* Show confirm/cancel buttons only if prescription not required */}
-                                                {!requiresPrescription && (
-                                                    <div className="flex gap-2 mt-4">
-                                                        <button
-                                                            onClick={() => sendMessage('cancel')}
-                                                            className="flex-1 py-2.5 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 text-sm font-medium rounded-lg transition-colors"
-                                                        >
-                                                            Cancel
-                                                        </button>
-                                                        <button
-                                                            onClick={() => sendMessage('confirm')}
-                                                            className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors"
-                                                        >
-                                                            Confirm Order
-                                                        </button>
-                                                    </div>
-                                                )}
+                                                {/* ALWAYS show Confirm/Cancel buttons */}
+                                                <div className="flex gap-2 mt-4">
+                                                    <button
+                                                        onClick={() => sendMessage('cancel')}
+                                                        className="flex-1 py-2.5 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 text-sm font-medium rounded-lg transition-colors"
+                                                    >
+                                                        Cancel
+                                                    </button>
+                                                    <button
+                                                        onClick={() => sendMessage('confirm')}
+                                                        className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors"
+                                                    >
+                                                        Confirm Order
+                                                    </button>
+                                                </div>
                                             </div>
                                         </div>
                                     );

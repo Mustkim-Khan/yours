@@ -464,7 +464,7 @@ class OrchestratorAgent:
 
     # ============ PRESCRIPTION RESUME FLOW ============
     
-    @orchestrator_span
+    # NOTE: NO @orchestrator_span here - this is a continuation, not a new root
     async def resume_with_prescription(
         self,
         session_id: str,
@@ -473,21 +473,41 @@ class OrchestratorAgent:
     ) -> OrchestratorResponse:
         """
         Resume order flow after prescription upload.
-        Skips PharmacistAgent, InventoryAgent, PolicyAgent.
-        Calls FulfillmentAgent directly with saved order details.
+        Returns ORDER_PREVIEW (not ORDER_CONFIRMATION).
+        FulfillmentAgent is called when user confirms the preview.
         
-        TRACE CONTINUITY:
-        - This span appears under same trace as original request
-        - FulfillmentAgent appears as next span after PolicyAgent
-        - Prescription upload logged as metadata, not new agent
+        Flow:
+        1. Prescription upload → ORDER_PREVIEW
+        2. User clicks Confirm Order → FulfillmentAgent → ORDER_CONFIRMATION
         """
         # Get pending prescription from session
         pending = self._get_pending_prescription(session_id)
         
         if not pending:
+            # Check if we already have a saved order preview (double-click prevention)
+            saved_preview = self._get_order_preview(session_id)
+            if saved_preview:
+                # Return the existing preview - don't create error message
+                medicine_name = saved_preview.items[0].medicine_name if saved_preview.items else "your medicine"
+                return OrchestratorResponse(
+                    session_id=session_id,
+                    response_text=f"Prescription verified! Your order for {medicine_name} is ready for confirmation.",
+                    agent_chain=[self.agent_name, "PolicyAgent:prescription_verified"],
+                    decisions_made=[],
+                    final_action=AgentAction.ANSWER_QUERY,
+                    order_created=None,
+                    requires_prescription=True,
+                    safety_warnings=[],
+                    trace_id=get_trace_id(),
+                    ui_card_type=UICardType.ORDER_PREVIEW,
+                    order_preview_data=saved_preview,
+                    order_confirmation_data=None,
+                    prescription_upload_data=None
+                )
+            # No pending prescription and no saved preview - show error
             return OrchestratorResponse(
                 session_id=session_id,
-                response_text="No pending prescription order found. Please start a new order.",
+                response_text="Please start a new order to continue.",
                 agent_chain=[self.agent_name],
                 decisions_made=[],
                 final_action=AgentAction.ANSWER_QUERY,
@@ -505,58 +525,79 @@ class OrchestratorAgent:
         self._mark_prescription_uploaded(session_id)
         
         order_info = pending['order_info']
-        evidence = pending['evidence']
         patient_id = pending['patient_id']
         
-        # Add prescription verification to evidence
-        evidence.append("prescription_uploaded=True")
-        evidence.append("prescription_verified=True")
-        evidence.append(f"prescription_medicine_id={medicine_id}")
-        
-        # Build agent chain - showing resume after PolicyAgent
-        agent_chain = [self.agent_name, "PolicyAgent:prescription_verified", "FulfillmentAgent"]
-        
-        # Delegate directly to FulfillmentAgent
-        fulfillment_output = await self._delegate_to_fulfillment(evidence, patient_id)
-        
-        # Extract order_id from evidence
-        order_created = None
-        for ev in fulfillment_output.evidence:
-            if ev.startswith("order_id="):
-                order_created = ev.split("=")[1]
-                break
-        
-        # Build order confirmation data
-        order_confirmation_data = None
-        if fulfillment_output.decision == Decision.APPROVED and order_created:
-            order_confirmation_data = self._build_order_confirmation(
-                order_created,
-                order_info,
-                patient_id
-            )
-        
-        # Clear pending prescription
-        self._clear_pending_prescription(session_id)
+        # Build agent chain - showing prescription verified
+        agent_chain = [self.agent_name, "PolicyAgent:prescription_verified"]
         
         medicine_name = order_info.get("medicine_name", "your medicine")
-        final_message = f"Prescription verified! Your order for {medicine_name} has been confirmed."
+        
+        # Look up patient name
+        patient_name = "Guest Customer"
+        if patient_id and self._data_service:
+            patients = self._data_service.get_all_patients()
+            patient = next((p for p in patients if p.patient_id == patient_id), None)
+            if patient:
+                patient_name = patient.patient_name
+        
+        # Get price and build order preview
+        quantity = int(order_info.get("quantity", 1))
+        unit_price = 5.00  # Default
+        if self._data_service:
+            meds = self._data_service.search_medicine(medicine_name)
+            if meds:
+                unit_price = getattr(meds[0], 'price', 5.00) or 5.00
+        
+        # Calculate totals ONCE - this is the single source of truth
+        subtotal = unit_price * quantity
+        tax = subtotal * 0.05
+        delivery_fee = 2.00
+        total_amount = subtotal + tax + delivery_fee
+        
+        # Build ORDER PREVIEW (NOT confirmation)
+        order_preview_data = OrderPreviewData(
+            preview_id=f"PRV-{session_id[:8].upper()}",
+            patient_id=patient_id,
+            patient_name=patient_name,
+            items=[OrderPreviewItem(
+                medicine_id=order_info.get("medicine_id", ""),
+                medicine_name=medicine_name,
+                strength=order_info.get("strength", ""),
+                quantity=quantity,
+                prescription_required=True,
+                unit_price=unit_price,
+                supply_days=quantity
+            )],
+            total_amount=total_amount,  # Use consistent total
+            safety_decision="APPROVE",
+            safety_reasons=[],
+            requires_prescription=True
+        )
+        
+        # Save order preview for later confirmation
+        self._save_order_preview(session_id, order_preview_data)
+        
+        # Clear pending prescription (it's now been converted to order preview)
+        self._clear_pending_prescription(session_id)
+        
+        final_message = f"Prescription verified! Your order for {medicine_name} is ready for confirmation."
         
         return OrchestratorResponse(
             session_id=session_id,
             response_text=final_message,
             agent_chain=agent_chain,
-            decisions_made=[self._to_agent_decision(fulfillment_output)],
-            final_action=AgentAction.CREATE_ORDER,
-            order_created=order_created,
+            decisions_made=[],
+            final_action=AgentAction.ANSWER_QUERY,
+            order_created=None,
             requires_prescription=True,
             safety_warnings=[],
             trace_id=get_trace_id(),
-            ui_card_type=UICardType.ORDER_CONFIRMATION,
-            order_preview_data=None,
-            order_confirmation_data=order_confirmation_data,
+            ui_card_type=UICardType.ORDER_PREVIEW,
+            order_preview_data=order_preview_data,
+            order_confirmation_data=None,
             prescription_upload_data=None
         )
-    
+
     def _build_order_confirmation(
         self,
         order_id: str,
