@@ -154,6 +154,70 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============ PRESCRIPTION UPLOAD ENDPOINT ============
+
+class PrescriptionUploadRequest(BaseModel):
+    """Prescription upload request from frontend"""
+    session_id: str
+    medicine_id: str
+    prescription_file: str  # Base64 encoded file or filename
+
+
+class PrescriptionUploadResponse(BaseModel):
+    """Prescription upload response"""
+    success: bool
+    message: str
+    session_id: str
+    agent_chain: list[str]
+    order_id: Optional[str] = None
+    trace_id: Optional[str] = None
+    ui_card_type: str = "order_confirmation"
+    order_confirmation: Optional[dict] = None
+
+
+@app.post("/prescription/upload", response_model=PrescriptionUploadResponse)
+async def upload_prescription(request: PrescriptionUploadRequest):
+    """
+    Handle prescription upload from frontend.
+    
+    Flow:
+    1. Accept prescription file (base64 or filename)
+    2. Mark prescription as verified in session
+    3. Resume order flow - skip to FulfillmentAgent directly
+    4. Return order confirmation
+    
+    TRACE CONTINUITY:
+    - This call resumes under same trace context
+    - FulfillmentAgent appears as next span after PolicyAgent
+    - No duplicate agent calls
+    """
+    try:
+        # Resume flow with prescription
+        result = await orchestrator.resume_with_prescription(
+            session_id=request.session_id,
+            medicine_id=request.medicine_id,
+            prescription_verified=True
+        )
+        
+        # Prepare order confirmation data
+        order_confirmation = None
+        if result.order_confirmation_data:
+            order_confirmation = result.order_confirmation_data.model_dump()
+        
+        return PrescriptionUploadResponse(
+            success=True,
+            message=result.response_text,
+            session_id=result.session_id,
+            agent_chain=result.agent_chain,
+            order_id=result.order_created,
+            trace_id=result.trace_id,
+            ui_card_type=result.ui_card_type.value if result.ui_card_type else "order_confirmation",
+            order_confirmation=order_confirmation
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Prescription upload failed: {str(e)}")
+
 @app.get("/inventory/search")
 async def search_inventory(query: str = ""):
     """Search inventory for medicines - returns complete medicine data"""
@@ -225,31 +289,73 @@ async def process_voice(request: dict):
     Output: { transcript: string, chat_response: {...}, audio_response_base64: string }
     """
     import base64
+    import time
     from services.voice_service import voice_service, VoiceServiceError
+    from langsmith.run_helpers import traceable as ls_traceable
     
-    try:
-        audio_b64 = request.get("audio_base64", "")
-        patient_id = request.get("patient_id")
-        session_id = request.get("session_id", "default")
+    @ls_traceable(
+        name="VoicePipeline (STT → Agent → TTS)",
+        run_type="chain",
+        metadata={"type": "voice", "model_stt": "whisper-1", "model_tts": "tts-1"},
+        tags=["voice", "stt", "tts"]
+    )
+    async def _process_voice_traced(audio_b64: str, patient_id: str, session_id: str):
+        voice_trace = {
+            "stt": {"status": "pending", "model": "whisper-1"},
+            "agents": {"status": "pending"},
+            "tts": {"status": "pending", "model": "tts-1", "voice": "nova"}
+        }
         
         # 1. STT: Convert audio to text
+        stt_start = time.time()
         audio_bytes = base64.b64decode(audio_b64)
-        transcript, _ = await voice_service.speech_to_text(audio_bytes, "webm")
+        transcript, detected_lang = await voice_service.speech_to_text(audio_bytes, "webm")
+        stt_duration = int((time.time() - stt_start) * 1000)
+        
+        voice_trace["stt"] = {
+            "status": "success",
+            "model": "whisper-1",
+            "transcript": transcript[:100] + "..." if len(transcript) > 100 else transcript,
+            "detected_language": detected_lang,
+            "duration_ms": stt_duration
+        }
         
         # 2. Process through agent chain
+        agent_start = time.time()
         orch_request = OrchestratorRequest(
             session_id=session_id,
             user_message=transcript,
             patient_id=patient_id
         )
         result = await orchestrator.process_request(orch_request)
+        agent_duration = int((time.time() - agent_start) * 1000)
+        
+        voice_trace["agents"] = {
+            "status": "success",
+            "chain": result.agent_chain,
+            "final_action": str(result.final_action),
+            "duration_ms": agent_duration
+        }
         
         # 3. TTS: Convert response to speech
+        tts_start = time.time()
+        audio_response_b64 = None
         try:
             response_audio = await voice_service.text_to_speech(result.response_text, voice="nova")
             audio_response_b64 = base64.b64encode(response_audio).decode("utf-8")
-        except VoiceServiceError:
-            audio_response_b64 = None
+            tts_duration = int((time.time() - tts_start) * 1000)
+            voice_trace["tts"] = {
+                "status": "success",
+                "model": "tts-1",
+                "voice": "nova",
+                "response_length": len(result.response_text),
+                "duration_ms": tts_duration
+            }
+        except VoiceServiceError as e:
+            voice_trace["tts"] = {
+                "status": "failed",
+                "error": str(e)
+            }
         
         return {
             "transcript": transcript,
@@ -260,10 +366,18 @@ async def process_voice(request: dict):
                 "extracted_entities": None,
                 "safety_result": None,
                 "order_preview": result.order_preview_data.model_dump() if result.order_preview_data else None,
-                "order": None
+                "order": None,
+                "voice_trace": voice_trace  # Include voice trace metadata
             },
             "audio_response_base64": audio_response_b64
         }
+    
+    try:
+        audio_b64 = request.get("audio_base64", "")
+        patient_id = request.get("patient_id")
+        session_id = request.get("session_id", "default")
+        
+        return await _process_voice_traced(audio_b64, patient_id, session_id)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Voice processing failed: {str(e)}")

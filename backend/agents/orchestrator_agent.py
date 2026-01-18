@@ -100,6 +100,43 @@ class OrchestratorAgent:
         state['order_preview'] = None
         state['has_preview'] = False
 
+    # ============ PRESCRIPTION FLOW SESSION STATE ============
+    
+    def _save_pending_prescription(
+        self, 
+        session_id: str, 
+        order_info: Dict[str, str],
+        evidence: List[str],
+        patient_id: str
+    ):
+        """Save pending prescription order to session for later resume."""
+        state = self._get_session_state(session_id)
+        state['pending_prescription'] = {
+            'order_info': order_info,
+            'evidence': evidence,
+            'patient_id': patient_id,
+            'requires_prescription': True,
+            'prescription_uploaded': False,
+            'prescription_verified': False
+        }
+    
+    def _get_pending_prescription(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Get pending prescription order from session."""
+        state = self._get_session_state(session_id)
+        return state.get('pending_prescription')
+    
+    def _mark_prescription_uploaded(self, session_id: str):
+        """Mark prescription as uploaded and verified."""
+        state = self._get_session_state(session_id)
+        if 'pending_prescription' in state:
+            state['pending_prescription']['prescription_uploaded'] = True
+            state['pending_prescription']['prescription_verified'] = True
+    
+    def _clear_pending_prescription(self, session_id: str):
+        """Clear pending prescription from session."""
+        state = self._get_session_state(session_id)
+        state.pop('pending_prescription', None)
+
     @orchestrator_span
     async def process_request(
         self, 
@@ -190,6 +227,32 @@ class OrchestratorAgent:
                 agent_chain.append("PolicyAgent")
                 if current_output.decision == Decision.NEEDS_INFO:
                     requires_prescription = True
+                    # Extract order details for pending prescription
+                    order_info = self._extract_order_info(all_evidence)
+                    # Save pending prescription for later resume
+                    self._save_pending_prescription(
+                        request.session_id,
+                        order_info,
+                        all_evidence.copy(),
+                        request.patient_id or "GUEST"
+                    )
+                    # Set UI card type to show PrescriptionUploadCard
+                    ui_card_type = UICardType.PRESCRIPTION_UPLOAD
+                    medicine_name = order_info.get("medicine_name", "This medication")
+                    medicine_id = order_info.get("medicine_id", "")
+                    is_controlled = any("controlled_substance=True" in ev for ev in all_evidence)
+                    prescription_upload_data = PrescriptionUploadData(
+                        medicine_name=medicine_name,
+                        medicine_id=medicine_id,
+                        requires_prescription=True,
+                        is_controlled=is_controlled,
+                        message=f"{medicine_name} requires a valid prescription. Please upload your prescription to continue."
+                    )
+                    # Break the chain - wait for prescription upload
+                    decisions_made.append(self._to_agent_decision(current_output))
+                    all_evidence.extend(current_output.evidence)
+                    final_message = f"{medicine_name} requires a valid prescription. Please upload your prescription to proceed with the order."
+                    break
                 
             elif next_agent == "FulfillmentAgent":
                 current_output = await self._delegate_to_fulfillment(
@@ -398,6 +461,158 @@ class OrchestratorAgent:
             Decision.SCHEDULED: AgentAction.PREDICT_REFILL,
         }
         return mapping.get(decision, AgentAction.ANSWER_QUERY)
+
+    # ============ PRESCRIPTION RESUME FLOW ============
+    
+    @orchestrator_span
+    async def resume_with_prescription(
+        self,
+        session_id: str,
+        medicine_id: str,
+        prescription_verified: bool = True
+    ) -> OrchestratorResponse:
+        """
+        Resume order flow after prescription upload.
+        Skips PharmacistAgent, InventoryAgent, PolicyAgent.
+        Calls FulfillmentAgent directly with saved order details.
+        
+        TRACE CONTINUITY:
+        - This span appears under same trace as original request
+        - FulfillmentAgent appears as next span after PolicyAgent
+        - Prescription upload logged as metadata, not new agent
+        """
+        # Get pending prescription from session
+        pending = self._get_pending_prescription(session_id)
+        
+        if not pending:
+            return OrchestratorResponse(
+                session_id=session_id,
+                response_text="No pending prescription order found. Please start a new order.",
+                agent_chain=[self.agent_name],
+                decisions_made=[],
+                final_action=AgentAction.ANSWER_QUERY,
+                order_created=None,
+                requires_prescription=True,
+                safety_warnings=[],
+                trace_id=get_trace_id(),
+                ui_card_type=UICardType.NONE,
+                order_preview_data=None,
+                order_confirmation_data=None,
+                prescription_upload_data=None
+            )
+        
+        # Mark prescription as uploaded and verified
+        self._mark_prescription_uploaded(session_id)
+        
+        order_info = pending['order_info']
+        evidence = pending['evidence']
+        patient_id = pending['patient_id']
+        
+        # Add prescription verification to evidence
+        evidence.append("prescription_uploaded=True")
+        evidence.append("prescription_verified=True")
+        evidence.append(f"prescription_medicine_id={medicine_id}")
+        
+        # Build agent chain - showing resume after PolicyAgent
+        agent_chain = [self.agent_name, "PolicyAgent:prescription_verified", "FulfillmentAgent"]
+        
+        # Delegate directly to FulfillmentAgent
+        fulfillment_output = await self._delegate_to_fulfillment(evidence, patient_id)
+        
+        # Extract order_id from evidence
+        order_created = None
+        for ev in fulfillment_output.evidence:
+            if ev.startswith("order_id="):
+                order_created = ev.split("=")[1]
+                break
+        
+        # Build order confirmation data
+        order_confirmation_data = None
+        if fulfillment_output.decision == Decision.APPROVED and order_created:
+            order_confirmation_data = self._build_order_confirmation(
+                order_created,
+                order_info,
+                patient_id
+            )
+        
+        # Clear pending prescription
+        self._clear_pending_prescription(session_id)
+        
+        medicine_name = order_info.get("medicine_name", "your medicine")
+        final_message = f"Prescription verified! Your order for {medicine_name} has been confirmed."
+        
+        return OrchestratorResponse(
+            session_id=session_id,
+            response_text=final_message,
+            agent_chain=agent_chain,
+            decisions_made=[self._to_agent_decision(fulfillment_output)],
+            final_action=AgentAction.CREATE_ORDER,
+            order_created=order_created,
+            requires_prescription=True,
+            safety_warnings=[],
+            trace_id=get_trace_id(),
+            ui_card_type=UICardType.ORDER_CONFIRMATION,
+            order_preview_data=None,
+            order_confirmation_data=order_confirmation_data,
+            prescription_upload_data=None
+        )
+    
+    def _build_order_confirmation(
+        self,
+        order_id: str,
+        order_info: Dict[str, str],
+        patient_id: str
+    ) -> OrderConfirmationData:
+        """Build order confirmation data from order info."""
+        from datetime import datetime
+        
+        # Look up patient name
+        patient_name = "Guest Customer"
+        if patient_id and self._data_service:
+            patients = self._data_service.get_all_patients()
+            patient = next((p for p in patients if p.patient_id == patient_id), None)
+            if patient:
+                patient_name = patient.patient_name
+        
+        quantity = int(order_info.get("quantity", 1))
+        unit_price = 5.00  # Default
+        
+        # Try to get actual price
+        if self._data_service:
+            meds = self._data_service.search_medicine(order_info.get("medicine_name", ""))
+            if meds:
+                unit_price = getattr(meds[0], 'price', 5.00) or 5.00
+        
+        subtotal = unit_price * quantity
+        tax = subtotal * 0.05
+        delivery_fee = 2.00
+        total = subtotal + tax + delivery_fee
+        
+        return OrderConfirmationData(
+            order_id=order_id,
+            preview_id=None,
+            patient_id=patient_id,
+            patient_name=patient_name,
+            items=[OrderPreviewItem(
+                medicine_id=order_info.get("medicine_id", ""),
+                medicine_name=order_info.get("medicine_name", ""),
+                strength=order_info.get("strength", ""),
+                quantity=quantity,
+                prescription_required=True,
+                unit_price=unit_price,
+                supply_days=quantity
+            )],
+            subtotal=subtotal,
+            tax=tax,
+            delivery_fee=delivery_fee,
+            total_amount=total,
+            safety_decision="APPROVE",
+            safety_reasons=[],
+            requires_prescription=True,
+            status="CONFIRMED",
+            created_at=datetime.now().isoformat(),
+            estimated_delivery="Ready in 2 hours"
+        )
 
     async def _delegate_to_pharmacist(
         self,

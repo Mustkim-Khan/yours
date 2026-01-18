@@ -93,14 +93,19 @@ class PolicyAgent:
             )
         
         if requires_rx:
+            # Build detailed reason (2 lines as required)
+            reason_line1 = f"{medicine_name} requires a valid prescription."
+            reason_line2 = f"Upload prescription to proceed. Flow paused awaiting prescription."
+            
             return AgentOutput(
                 agent=self.agent_name,
                 decision=Decision.NEEDS_INFO,
-                reason=f"{medicine_name} requires a valid prescription",
+                reason=f"{reason_line1} {reason_line2}",
                 evidence=[
                     f"medicine_name={medicine_name}",
                     f"requires_prescription=True",
-                    f"controlled_substance=False"
+                    f"controlled_substance=False",
+                    f"policy_check=NEEDS_PRESCRIPTION"
                 ],
                 message=None,
                 next_agent=None
