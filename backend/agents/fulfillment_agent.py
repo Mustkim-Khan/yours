@@ -49,6 +49,33 @@ class FulfillmentAgent:
     def set_data_service(self, data_service):
         """Inject data service"""
         self._data_service = data_service
+    
+    async def _generate_reasoning(self, context: str, decision: str) -> str:
+        """
+        Generate a concise, logical reasoning string using the LLM.
+        This provides 'Chain of Thought' visibility in traces.
+        """
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a pharmacy fulfillment expert. Verify the decision logic. Output a concise justification (max 15 words)."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Context: {context}\nDecision: {decision}\nReasoning:"
+                    }
+                ],
+                # temperature=0.1,  
+                # max_tokens=200
+                max_completion_tokens=50
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"FulfillmentAgent Reasoning Error: {e}")
+            return f"{decision} based on order data (Fallback: {str(e)})"
 
 
     @agent_trace("FulfillmentAgent", "gpt-5-mini")
@@ -117,6 +144,8 @@ class FulfillmentAgent:
         # Build detailed reason (2 lines as required)
         reason_line1 = f"Order {order_id} created successfully for {len(items)} item(s)."
         reason_line2 = f"Total: ${total_amount:.2f}. {delivery_estimate}. Warehouse notified."
+        context = f"{reason_line1} {reason_line2}"
+        reason = await self._generate_reasoning(context, "APPROVED")
         
         # Generate dynamic confirmation message using LLM
         llm_message = await self._generate_message(
@@ -127,7 +156,7 @@ class FulfillmentAgent:
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
-            reason=f"{reason_line1} {reason_line2}",
+            reason=reason,
             evidence=[
                 f"order_id={order_id}",
                 f"patient_id={patient_id}",
@@ -147,12 +176,18 @@ class FulfillmentAgent:
         webhook_url = os.getenv("WAREHOUSE_WEBHOOK_URL", "https://httpbin.org/post")
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.post(webhook_url, json={
+                payload = {
                     "event": "order_created",
                     "order_id": order_data["order_id"],
                     "items": order_data["items"],
                     "priority": "normal"
-                })
+                }
+                print(f"🚀 Triggering Webhook to {webhook_url}...")
+                print(f"📦 Payload: {payload}")
+                
+                response = await client.post(webhook_url, json=payload)
+                print(f"✅ Webhook Response: {response.status_code}")
+                
                 return "success" if response.status_code == 200 else "failed"
         except Exception:
             return "skipped"
@@ -174,10 +209,13 @@ class FulfillmentAgent:
                 next_agent=None
             )
         
+        context = f"Order {order_id} is {order['status']}. Delivery: {order['delivery_estimate']}."
+        reason = await self._generate_reasoning(context, "APPROVED")
+        
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
-            reason=f"Order {order_id} status retrieved",
+            reason=reason,
             evidence=[
                 f"order_id={order_id}",
                 f"status={order['status']}",
@@ -221,10 +259,13 @@ class FulfillmentAgent:
         order["cancelled_at"] = datetime.now().isoformat()
         order["cancel_reason"] = reason
         
+        context = f"Order {order_id} cancelled. Reason: {reason}."
+        reason = await self._generate_reasoning(context, "APPROVED")
+        
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
-            reason=f"Order {order_id} cancelled",
+            reason=reason,
             evidence=[
                 f"order_id={order_id}",
                 f"status=CANCELLED",
@@ -253,10 +294,13 @@ class FulfillmentAgent:
         
         receipt_id = f"RCP-{uuid.uuid4().hex[:8].upper()}"
         
+        context = f"Receipt {receipt_id} generated for order {order_id}. Amount: ${order['total_amount']:.2f}."
+        reason = await self._generate_reasoning(context, "APPROVED")
+        
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
-            reason=f"Receipt {receipt_id} generated for order {order_id}",
+            reason=reason,
             evidence=[
                 f"order_id={order_id}",
                 f"receipt_id={receipt_id}",
@@ -359,10 +403,13 @@ class FulfillmentAgent:
             "delivery_estimate": "Tomorrow by 9:00 PM"
         }
         
+        context = f"Order {order_id} confirmed. Total: ${total:.2f}. Delivery: Tomorrow."
+        reason = await self._generate_reasoning(context, "APPROVED")
+        
         agent_output = AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
-            reason=f"Order {order_id} confirmed successfully",
+            reason=reason,
             evidence=[
                 f"order_id={order_id}",
                 f"patient_id={preview_data.patient_id}",

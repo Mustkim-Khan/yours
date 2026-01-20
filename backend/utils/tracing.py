@@ -91,6 +91,8 @@ def is_tracing_disabled() -> bool:
     return _tracing_disabled_context
 
 
+import inspect
+
 def agent_trace(agent_name: str, model_name: str):
     """
     STRICT agent tracing decorator - CHILD SPANS ONLY.
@@ -98,14 +100,14 @@ def agent_trace(agent_name: str, model_name: str):
     
     CRITICAL: This decorator only creates a span if called within
     an existing trace context (e.g., under OrchestratorAgent).
-    If no parent exists, executes without tracing to avoid orphan roots.
-    
-    Usage:
-        @agent_trace("PharmacistAgent", "gpt-5.2")
-        async def process_message(self, message: str) -> AgentOutput:
-            ...
     """
     def decorator(func: Callable) -> Callable:
+        # Pre-compute signature to avoid overhead
+        try:
+            sig = inspect.signature(func)
+        except Exception:
+            sig = None
+
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
             start_time = time.time()
@@ -114,6 +116,17 @@ def agent_trace(agent_name: str, model_name: str):
             parent_run = get_current_run_tree()
             
             if parent_run is not None:
+                # Prepare clean inputs for the trace
+                try:
+                    if sig:
+                        bound = sig.bind(*args, **kwargs)
+                        bound.apply_defaults()
+                        clean_inputs = {k: v for k, v in bound.arguments.items() if k != 'self'}
+                    else:
+                        clean_inputs = {"args": [str(a) for a in args], "kwargs": kwargs}
+                except Exception:
+                    clean_inputs = {"args": [str(a) for a in args], "kwargs": kwargs}
+
                 # We have a parent - create a child span
                 @ls_traceable(
                     name=f"{agent_name} ({model_name})",
@@ -125,13 +138,13 @@ def agent_trace(agent_name: str, model_name: str):
                     },
                     tags=[agent_name, model_name, "agent"]
                 )
-                async def traced_agent(*a, **kw):
-                    # Disable nested tracing for LLM calls inside this agent
+                async def traced_proxy(trace_inputs):
+                    # We accept trace_inputs just to capture them in the trace
+                    # But we execute the original func with original args/kwargs
                     with disable_nested_tracing():
-                        result = await func(*a, **kw)
-                    return result
+                        return await func(*args, **kwargs)
                 
-                result = await traced_agent(*args, **kwargs)
+                result = await traced_proxy(clean_inputs)
             else:
                 # No parent trace - execute without creating orphan root
                 with disable_nested_tracing():
@@ -174,6 +187,17 @@ def agent_trace(agent_name: str, model_name: str):
             parent_run = get_current_run_tree()
             
             if parent_run is not None:
+                # Prepare clean inputs
+                try:
+                    if sig:
+                        bound = sig.bind(*args, **kwargs)
+                        bound.apply_defaults()
+                        clean_inputs = {k: v for k, v in bound.arguments.items() if k != 'self'}
+                    else:
+                        clean_inputs = {"args": [str(a) for a in args], "kwargs": kwargs}
+                except Exception:
+                    clean_inputs = {"args": [str(a) for a in args], "kwargs": kwargs}
+
                 @ls_traceable(
                     name=f"{agent_name} ({model_name})",
                     run_type="chain",
@@ -184,11 +208,11 @@ def agent_trace(agent_name: str, model_name: str):
                     },
                     tags=[agent_name, model_name, "agent"]
                 )
-                def traced_agent(*a, **kw):
+                def traced_proxy(trace_inputs):
                     with disable_nested_tracing():
-                        return func(*a, **kw)
+                        return func(*args, **kwargs)
                 
-                return traced_agent(*args, **kwargs)
+                return traced_proxy(clean_inputs)
             else:
                 # No parent trace - execute without creating orphan root
                 with disable_nested_tracing():
@@ -211,6 +235,12 @@ def orchestrator_trace(func: Callable) -> Callable:
     - First request creates a root trace
     - Continuation requests (confirm) create child spans under the same session
     """
+    # Pre-compute signature
+    try:
+        sig = inspect.signature(func)
+    except Exception:
+        sig = None
+
     @wraps(func)
     async def async_wrapper(*args, **kwargs):
         # Extract session_id from request argument
@@ -220,6 +250,17 @@ def orchestrator_trace(func: Callable) -> Callable:
             if hasattr(request, 'session_id'):
                 session_id = request.session_id
         
+        # Prepare clean inputs
+        try:
+            if sig:
+                bound = sig.bind(*args, **kwargs)
+                bound.apply_defaults()
+                clean_inputs = {k: v for k, v in bound.arguments.items() if k != 'self'}
+            else:
+                clean_inputs = {"args": [str(a) for a in args], "kwargs": kwargs}
+        except Exception:
+            clean_inputs = {"args": [str(a) for a in args], "kwargs": kwargs}
+
         # Check if this is a continuation of an existing trace
         existing_trace = get_session_trace(session_id) if session_id else None
         
@@ -236,10 +277,10 @@ def orchestrator_trace(func: Callable) -> Callable:
                 },
                 tags=["orchestrator", "continuation"]
             )
-            async def traced_continuation(*a, **kw):
-                return await func(*a, **kw)
+            async def traced_continuation(trace_inputs):
+                return await func(*args, **kwargs)
             
-            result = await traced_continuation(*args, **kwargs)
+            result = await traced_continuation(clean_inputs)
         else:
             # This is a new flow - create root trace
             @ls_traceable(
@@ -252,10 +293,10 @@ def orchestrator_trace(func: Callable) -> Callable:
                 },
                 tags=["orchestrator", "root"]
             )
-            async def traced_root(*a, **kw):
-                return await func(*a, **kw)
+            async def traced_root(trace_inputs):
+                return await func(*args, **kwargs)
             
-            result = await traced_root(*args, **kwargs)
+            result = await traced_root(clean_inputs)
             
             # Store the trace ID for this session for future continuations
             if session_id:

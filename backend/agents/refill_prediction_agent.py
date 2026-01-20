@@ -56,6 +56,35 @@ class RefillPredictionAgent:
 
 
     @agent_trace("RefillPredictionAgent", "gpt-5-mini")
+    async def _generate_reasoning(self, context: str, decision: str) -> str:
+        """
+        Generate a concise, logical reasoning string using the LLM.
+        This provides 'Chain of Thought' visibility in traces.
+        """
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a pharmacy refill expert. Verify the decision logic. Output a concise justification (max 15 words)."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Context: {context}\nDecision: {decision}\nReasoning:"
+                    }
+                ],
+                # temperature=0.1,  
+                # max_tokens=200 
+                max_completion_tokens=50
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"RefillPredictionAgent Reasoning Error: {e}")
+            return f"{decision} based on refill history (Fallback: {str(e)})"
+
+
+    @agent_trace("RefillPredictionAgent", "gpt-5-mini")
     async def get_refill_predictions(
         self, 
         patient_id: str,
@@ -133,10 +162,14 @@ class RefillPredictionAgent:
                 context=f"{urgent_count} medication(s) need refill within 7 days",
                 task="Generate a caring reminder about urgent medication refills"
             )
+            
+            context = f"{urgent_count} medications with <= 7 days supply. Urgent scheduling needed."
+            reason = await self._generate_reasoning(context, "SCHEDULED")
+            
             return AgentOutput(
                 agent=self.agent_name,
                 decision=Decision.SCHEDULED,
-                reason=f"{urgent_count} medication(s) need refill within 7 days",
+                reason=reason,
                 evidence=evidence,
                 message=llm_message,
                 next_agent="PharmacistAgent"
@@ -148,10 +181,13 @@ class RefillPredictionAgent:
             task="Generate a helpful refill status update"
         )
         
+        context = f"{len(refills)} medications approaching refill threshold. Proactive notification."
+        reason = await self._generate_reasoning(context, "APPROVED")
+        
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
-            reason=f"{len(refills)} medication(s) will need refill soon",
+            reason=reason,
             evidence=evidence,
             message=llm_message,
             next_agent=None
@@ -194,10 +230,13 @@ class RefillPredictionAgent:
         med_history = history[history['medicine_name'].str.lower().str.contains(med_lower)]
         
         if med_history.empty:
+            context = f"No prior history for {medicine_name}. Treated as new prescription/first fill."
+            reason = await self._generate_reasoning(context, "APPROVED")
+            
             return AgentOutput(
                 agent=self.agent_name,
                 decision=Decision.APPROVED,
-                reason=f"First time order for {medicine_name} - eligible",
+                reason=reason,
                 evidence=[
                     f"patient_id={patient_id}",
                     f"medicine_name={medicine_name}",
@@ -217,10 +256,13 @@ class RefillPredictionAgent:
         # Check if too early (less than 75% consumed)
         if days_since < days_supply * 0.75:
             days_until_eligible = int(days_supply * 0.75 - days_since)
+            context = f"Refill requested too early. {days_since}/{days_supply} days used. Eligible in {days_until_eligible} days."
+            reason = await self._generate_reasoning(context, "REJECTED")
+            
             return AgentOutput(
                 agent=self.agent_name,
                 decision=Decision.REJECTED,
-                reason=f"Too early for refill - eligible in {days_until_eligible} days",
+                reason=reason,
                 evidence=[
                     f"patient_id={patient_id}",
                     f"medicine_name={medicine_name}",
@@ -232,10 +274,13 @@ class RefillPredictionAgent:
                 next_agent=None
             )
         
+        context = f"Eligible for refill. {days_since}/{days_supply} days used (>{0.75*100}%)."
+        reason = await self._generate_reasoning(context, "APPROVED")
+        
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
-            reason=f"Eligible for {medicine_name} refill",
+            reason=reason,
             evidence=[
                 f"patient_id={patient_id}",
                 f"medicine_name={medicine_name}",

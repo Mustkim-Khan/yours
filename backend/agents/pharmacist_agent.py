@@ -132,7 +132,7 @@ ACTION PARAMETERS
 
 emit_decision:
 - decision: APPROVED | REJECTED | NEEDS_INFO | SCHEDULED
-- reason: Short factual justification
+- reason: Short factual justification (under 20 words)
 - evidence: Comma-separated data points
 - message: User-facing message
 - next_agent: InventoryAgent | PolicyAgent | FulfillmentAgent | RefillPredictionAgent | null

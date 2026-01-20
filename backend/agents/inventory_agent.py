@@ -45,6 +45,33 @@ class InventoryAgent:
         """Inject data service"""
         self._data_service = data_service
 
+    async def _generate_reasoning(self, context: str, decision: str) -> str:
+        """
+        Generate a concise, logical reasoning string using the LLM.
+        This provides 'Chain of Thought' visibility in traces.
+        """
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a pharmacy inventory expert. Verify the decision logic. Output a concise justification (max 15 words)."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Context: {context}\nDecision: {decision}\nReasoning:"
+                    }
+                ],
+                # temperature=0.1,  # Removed to avoid "unsupported value" error
+                # max_tokens=200 # Removed to avoid "unsupported_parameter" error
+                max_completion_tokens=50  # Limit output for speed
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"InventoryAgent Reasoning Error: {e}")
+            return f"{decision} based on inventory data (Fallback: {str(e)})"
+
 
     @agent_trace("InventoryAgent", "gpt-5-mini")
     async def check_stock(
@@ -91,10 +118,12 @@ class InventoryAgent:
         
         # Check stock status
         if match.discontinued:
+            context = f"{match.medicine_name} is discontinued. Cannot be fulfilled."
+            reason = await self._generate_reasoning(context, "REJECTED")
             return AgentOutput(
                 agent=self.agent_name,
                 decision=Decision.REJECTED,
-                reason=f"{match.medicine_name} has been discontinued",
+                reason=reason,
                 evidence=[
                     f"medicine_id={match.medicine_id}",
                     f"medicine_name={match.medicine_name}",
@@ -105,10 +134,12 @@ class InventoryAgent:
             )
         
         if match.stock_level == 0:
+            context = f"{match.medicine_name} is out of stock (level 0). Cannot fulfill."
+            reason = await self._generate_reasoning(context, "REJECTED")
             return AgentOutput(
                 agent=self.agent_name,
                 decision=Decision.REJECTED,
-                reason=f"{match.medicine_name} is out of stock",
+                reason=reason,
                 evidence=[
                     f"medicine_id={match.medicine_id}",
                     f"medicine_name={match.medicine_name}",
@@ -124,6 +155,8 @@ class InventoryAgent:
         # Build detailed reason (2 lines as required)
         reason_line1 = f"{match.medicine_name} {match.strength} is available ({stock_status})."
         reason_line2 = f"Stock verified. Routing to PolicyAgent for compliance check."
+        context = f"{reason_line1} {reason_line2}"
+        reason = await self._generate_reasoning(context, "APPROVED")
         
         # Generate dynamic message using LLM
         llm_message = await self._generate_message(
@@ -134,7 +167,7 @@ class InventoryAgent:
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
-            reason=f"{reason_line1} {reason_line2}",
+            reason=reason,
             evidence=[
                 f"medicine_id={match.medicine_id}",
                 f"medicine_name={match.medicine_name}",
@@ -164,10 +197,12 @@ class InventoryAgent:
         medicines = self._data_service.search_medicine(query)
         
         if not medicines:
+            context = f"Search query '{query}' yielded 0 results in inventory."
+            reason = await self._generate_reasoning(context, "REJECTED")
             return AgentOutput(
                 agent=self.agent_name,
                 decision=Decision.REJECTED,
-                reason=f"No medicines found matching '{query}'",
+                reason=reason,
                 evidence=[f"query={query}", "results=0"],
                 message=None,
                 next_agent=None
@@ -176,10 +211,13 @@ class InventoryAgent:
         match = medicines[0]
         alternatives = [m.medicine_name for m in medicines[1:4]]
         
+        context = f"Found {len(medicines)} results for '{query}'. Top match: {match.medicine_name}."
+        reason = await self._generate_reasoning(context, "APPROVED")
+        
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
-            reason=f"Found {len(medicines)} result(s) for '{query}'",
+            reason=reason,
             evidence=[
                 f"medicine_id={match.medicine_id}",
                 f"medicine_name={match.medicine_name}",
@@ -206,10 +244,12 @@ class InventoryAgent:
         medicine = self._data_service.get_medicine_by_id(medicine_id)
         
         if not medicine:
+            context = f"Medicine ID {medicine_id} not found in database for pricing."
+            reason = await self._generate_reasoning(context, "REJECTED")
             return AgentOutput(
                 agent=self.agent_name,
                 decision=Decision.REJECTED,
-                reason=f"Medicine {medicine_id} not found",
+                reason=reason,
                 evidence=[f"medicine_id={medicine_id}"],
                 message=None,
                 next_agent=None
@@ -219,10 +259,13 @@ class InventoryAgent:
         base_prices = {"Tablet": 5.00, "Capsule": 7.00, "Syrup": 12.00, "Injection": 25.00, "Inhaler": 35.00}
         unit_price = base_prices.get(medicine.form, 5.00)
         
+        context = f"Pricing found for {medicine.medicine_name} ({medicine.form}): ${unit_price}."
+        reason = await self._generate_reasoning(context, "APPROVED")
+        
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
-            reason=f"Pricing found for {medicine.medicine_name}",
+            reason=reason,
             evidence=[
                 f"medicine_id={medicine_id}",
                 f"unit_price=${unit_price:.2f}",

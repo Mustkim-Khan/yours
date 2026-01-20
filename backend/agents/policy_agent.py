@@ -50,6 +50,10 @@ class PolicyAgent:
     def __init__(self, model_name: str = MODEL_NAME, temperature: float = TEMPERATURE):
         self.agent_name = "PolicyAgent"
         self.model_name = model_name
+        self.temperature = temperature
+        # Direct OpenAI client for reasoning generation
+        from openai import AsyncOpenAI
+        self.client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         # Use non-traced LLM to prevent LLM calls from appearing in traces
         self.llm = create_non_traced_llm(model_name, temperature)
         self._data_service = None
@@ -57,6 +61,33 @@ class PolicyAgent:
     def set_data_service(self, data_service):
         """Inject data service"""
         self._data_service = data_service
+
+    async def _generate_reasoning(self, context: str, decision: str) -> str:
+        """
+        Generate a concise, logical reasoning string using the LLM.
+        This provides 'Chain of Thought' visibility in traces.
+        """
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a pharmacy policy expert. Verify the decision logic. Output a concise justification (max 15 words)."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Context: {context}\nDecision: {decision}\nReasoning:"
+                    }
+                ],
+                # temperature=0.1,  # Removed to avoid "unsupported value" error with reasoning models
+                # max_tokens=200 # Removed to avoid "unsupported_parameter" error with reasoning models
+                max_completion_tokens=50
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"PolicyAgent Reasoning Error: {e}")
+            return f"{decision} based on policy rules (Fallback: {str(e)})"
 
     @agent_trace("PolicyAgent", "gpt-5.2")
     async def check_prescription_required(self, medicine_name: str) -> AgentOutput:
@@ -76,10 +107,12 @@ class PolicyAgent:
                 is_controlled = medicines[0].controlled_substance
         
         if is_controlled:
+            context = f"{medicine_name} is a controlled substance. Strict policy: Prescription required, max 30 days."
+            reason = await self._generate_reasoning(context, "REJECTED")
             return AgentOutput(
                 agent=self.agent_name,
                 decision=Decision.REJECTED,
-                reason=f"{medicine_name} is a controlled substance - prescription required",
+                reason=reason,
                 evidence=[
                     f"medicine_name={medicine_name}",
                     f"controlled_substance=True",
@@ -96,11 +129,13 @@ class PolicyAgent:
             # Build detailed reason (2 lines as required)
             reason_line1 = f"{medicine_name} requires a valid prescription."
             reason_line2 = f"Upload prescription to proceed. Flow paused awaiting prescription."
+            context = f"{reason_line1} {reason_line2}"
+            reason = await self._generate_reasoning(context, "NEEDS_INFO")
             
             return AgentOutput(
                 agent=self.agent_name,
                 decision=Decision.NEEDS_INFO,
-                reason=f"{reason_line1} {reason_line2}",
+                reason=reason,
                 evidence=[
                     f"medicine_name={medicine_name}",
                     f"requires_prescription=True",
@@ -115,11 +150,13 @@ class PolicyAgent:
         # Build detailed reason (2 lines as required)
         reason_line1 = f"{medicine_name} is available over-the-counter."
         reason_line2 = f"No prescription required. Approved for fulfillment."
+        context = f"{reason_line1} {reason_line2}"
+        reason = await self._generate_reasoning(context, "APPROVED")
         
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
-            reason=f"{reason_line1} {reason_line2}",
+            reason=reason,
             evidence=[
                 f"medicine_name={medicine_name}",
                 f"requires_prescription=False",
@@ -155,10 +192,12 @@ class PolicyAgent:
                 max_allowed = min(max_allowed, medicines[0].max_quantity_per_order)
         
         if quantity > max_allowed:
+            context = f"Quantity {quantity} exceeds limit of {max_allowed} for {limit_type} medicines."
+            reason = await self._generate_reasoning(context, "REJECTED")
             return AgentOutput(
                 agent=self.agent_name,
                 decision=Decision.REJECTED,
-                reason=f"Quantity {quantity} exceeds limit of {max_allowed} for {limit_type} medicines",
+                reason=reason,
                 evidence=[
                     f"medicine_name={medicine_name}",
                     f"requested_quantity={quantity}",
@@ -169,10 +208,12 @@ class PolicyAgent:
                 next_agent=None
             )
         
+        context = f"Quantity {quantity} is within allowed limit of {max_allowed}."
+        reason = await self._generate_reasoning(context, "APPROVED")
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
-            reason=f"Quantity {quantity} is within allowed limit of {max_allowed}",
+            reason=reason,
             evidence=[
                 f"medicine_name={medicine_name}",
                 f"requested_quantity={quantity}",
@@ -210,20 +251,24 @@ class PolicyAgent:
                     severity = interaction["severity"]
         
         if severity == "severe":
+            context = f"Severe drug interaction detected: {warnings}."
+            reason = await self._generate_reasoning(context, "REJECTED")
             return AgentOutput(
                 agent=self.agent_name,
                 decision=Decision.REJECTED,
-                reason=f"Severe drug interaction detected",
+                reason=reason,
                 evidence=[f"interaction={w}" for w in warnings] + [f"severity={severity}"],
                 message=None,
                 next_agent=None
             )
         
         if warnings:
+            context = f"Drug interaction warning matched: {warnings}. Severity {severity} is acceptable."
+            reason = await self._generate_reasoning(context, "APPROVED")
             return AgentOutput(
                 agent=self.agent_name,
                 decision=Decision.APPROVED,
-                reason=f"Drug interaction warning: {severity}",
+                reason=reason,
                 evidence=[f"interaction={w}" for w in warnings] + [f"severity={severity}"],
                 message=None,
                 next_agent="FulfillmentAgent"
