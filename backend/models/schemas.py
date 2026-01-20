@@ -271,6 +271,7 @@ class OrchestratorRequest(BaseModel):
     user_message: str
     patient_id: Optional[str] = None
     user_name: Optional[str] = None  # User's display name from Firestore for greeting
+    user_id: Optional[str] = None    # Firebase UID for persistence
     conversation_history: List[dict] = Field(default_factory=list)
 
 

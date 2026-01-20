@@ -271,7 +271,8 @@ class FulfillmentAgent:
     async def confirm_order(
         self,
         preview_data: OrderPreviewData,
-        patient_name: str
+        patient_name: str,
+        user_id: Optional[str] = None
     ) -> tuple[AgentOutput, OrderConfirmationData, str]:
         """
         Confirm an order from preview data.
@@ -374,6 +375,20 @@ class FulfillmentAgent:
             message=summary,
             next_agent=None
         )
+        
+        # Save to Firestore if user_id provided
+        if user_id:
+            try:
+                from services.firestore_service import save_order
+                save_order(user_id, {
+                    "order_id": order_id,
+                    "items": [item.model_dump() for item in preview_data.items],
+                    "total_amount": total,
+                    "status": "CONFIRMED",
+                    "requires_prescription": preview_data.requires_prescription
+                })
+            except Exception as e:
+                print(f"Failed to persist order: {e}")
         
         return agent_output, order_confirmation, summary
 

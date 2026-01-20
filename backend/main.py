@@ -140,12 +140,16 @@ async def chat(
         print(f"📝 Authenticated request from: {current_user.get('email', 'unknown')}")
 
     try:
+        # Extract user_id if authenticated
+        user_id = current_user.get("uid") if current_user else None
+
         # Create orchestrator request
         orch_request = OrchestratorRequest(
             session_id=request.session_id,
             user_message=request.message,
             patient_id=request.patient_id,
-            user_name=request.user_name  # Pass user name for personalized greeting
+            user_name=request.user_name,  # Pass user name for personalized greeting
+            user_id=user_id               # Pass Firebase UID for persistence
         )
         
         # Process through agent chain
@@ -304,7 +308,10 @@ async def get_chat_history(patient_id: str):
 
 
 @app.post("/voice")
-async def process_voice(request: dict):
+async def process_voice(
+    request: dict,
+    current_user: Optional[dict] = Depends(get_optional_user)
+):
     """
     Process voice input: STT → Agent → TTS
     
@@ -322,7 +329,7 @@ async def process_voice(request: dict):
         metadata={"type": "voice", "model_stt": "whisper-1", "model_tts": "tts-1"},
         tags=["voice", "stt", "tts"]
     )
-    async def _process_voice_traced(audio_b64: str, patient_id: str, session_id: str):
+    async def _process_voice_traced(audio_b64: str, patient_id: str, session_id: str, user_id: Optional[str], user_name: Optional[str]):
         voice_trace = {
             "stt": {"status": "pending", "model": "whisper-1"},
             "agents": {"status": "pending"},
@@ -348,7 +355,9 @@ async def process_voice(request: dict):
         orch_request = OrchestratorRequest(
             session_id=session_id,
             user_message=transcript,
-            patient_id=patient_id
+            patient_id=patient_id,
+            user_id=user_id,
+            user_name=user_name
         )
         result = await orchestrator.process_request(orch_request)
         agent_duration = int((time.time() - agent_start) * 1000)
@@ -400,7 +409,11 @@ async def process_voice(request: dict):
         patient_id = request.get("patient_id")
         session_id = request.get("session_id", "default")
         
-        return await _process_voice_traced(audio_b64, patient_id, session_id)
+        # Extract user info
+        user_id = current_user.get("uid") if current_user else None
+        user_name = current_user.get("name") if current_user else None
+        
+        return await _process_voice_traced(audio_b64, patient_id, session_id, user_id, user_name)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Voice processing failed: {str(e)}")

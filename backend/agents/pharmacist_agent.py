@@ -118,6 +118,15 @@ STOCK RULES
 - Always ask for quantity after confirming availability
 
 ========================
+HISTORY & PAST ORDERS
+========================
+- If user asks "what did I order?", "order history", "last purchase":
+  1. CHECK 'Recent Orders' in the CONTEXT section first.
+  2. If orders exist: ANSWER DIRECTLY (e.g., "You recently ordered [Medicine] on [Date].").
+  3. Action: "emit_decision" (DO NOT delegate to Refill/Inventory).
+  4. If no history in context: "I don't see any recent orders in your history."
+
+========================
 ACTION PARAMETERS
 ========================
 
@@ -174,12 +183,10 @@ class PharmacistAgent:
         user_message: str, 
         session_id: str = "default",
         patient_id: Optional[str] = None,
-        patient_name: Optional[str] = None
+        patient_name: Optional[str] = None,
+        user_id: Optional[str] = None
     ) -> AgentOutput:
-        """
-        Process message and return standardized AgentOutput.
-        Uses direct OpenAI API calls - no AgentExecutor or ChatPromptTemplate.
-        """
+        """Process user message and return structured output"""
         if session_id not in self.sessions:
             self.sessions[session_id] = []
         
@@ -187,14 +194,33 @@ class PharmacistAgent:
         
         # Build context with patient info
         context_parts = []
-        if patient_id:
-            context_parts.append(f"Patient ID: {patient_id}")
         if patient_name:
             context_parts.append(f"Patient Name: {patient_name}")
-        context = f"\n[Context: {', '.join(context_parts)}]" if context_parts else ""
+        if patient_id:
+            context_parts.append(f"Patient ID: {patient_id}")
+            
+        # Get patient history if available
+        if user_id:
+            try:
+                from services.firestore_service import get_orders
+                orders = get_orders(user_id, limit=3)
+                if orders:
+                    history_text = "Recent Orders:\n"
+                    for o in orders:
+                        date = o.get('orderedAt', 'recent')[:10] if isinstance(o.get('orderedAt'), str) else 'recent'
+                        history_text += f"- {o.get('medicine')} ({o.get('quantity')}x {o.get('dosage')}) on {date}\n"
+                    context_parts.append(history_text)
+            except Exception as e:
+                print(f"Failed to fetch history: {e}")
         
+        # Build the system prompt dynamically
+        dynamic_system_prompt = SYSTEM_PROMPT
+        if context_parts:
+            dynamic_system_prompt += "\n\n========================\nADDITIONAL CONTEXT\n========================\n"
+            dynamic_system_prompt += "\n".join(context_parts)
+
         # Build messages for OpenAI
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages = [{"role": "system", "content": dynamic_system_prompt}]
         
         # Add chat history
         for msg in chat_history[-10:]:  # Last 10 messages
@@ -206,8 +232,8 @@ class PharmacistAgent:
                 content = msg.content if hasattr(msg, 'content') else str(msg)
                 messages.append({"role": role, "content": content})
         
-        # Add current user message with context
-        messages.append({"role": "user", "content": user_message + context})
+        # Add current user message
+        messages.append({"role": "user", "content": user_message})
         
         # Call OpenAI directly (no LangChain wrapper = no trace spans)
         response = await self.client.chat.completions.create(

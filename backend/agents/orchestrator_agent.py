@@ -178,7 +178,8 @@ class OrchestratorAgent:
                 # Delegate to FulfillmentAgent to confirm order
                 agent_output, order_confirmation_data, summary = await self.fulfillment.confirm_order(
                     saved_preview,
-                    saved_preview.patient_name
+                    saved_preview.patient_name,
+                    request.user_id  # Pass user_id for persistence
                 )
                 
                 if order_confirmation_data:
@@ -206,7 +207,8 @@ class OrchestratorAgent:
             request.user_message,
             request.session_id,
             request.patient_id,
-            request.user_name  # Pass user_name from Firestore
+            request.user_name,  # Pass user_name from Firestore
+            request.user_id     # Pass user_id for persistence
         )
         
         agent_chain.append("PharmacistAgent")
@@ -275,7 +277,8 @@ class OrchestratorAgent:
                 
             elif next_agent == "RefillPredictionAgent":
                 current_output = await self._delegate_to_refill(
-                    request.patient_id or ""
+                    request.patient_id or "",
+                    request.user_id
                 )
                 agent_chain.append("RefillPredictionAgent")
                 
@@ -654,7 +657,8 @@ class OrchestratorAgent:
         message: str,
         session_id: str,
         patient_id: Optional[str],
-        user_name: Optional[str] = None  # User name from Firestore (priority)
+        user_name: Optional[str] = None,  # User name from Firestore (priority)
+        user_id: Optional[str] = None     # User ID for persistence
     ) -> AgentOutput:
         """Delegate to PharmacistAgent"""
         # Use user_name from Firestore if provided, otherwise fallback to demo patient lookup
@@ -665,7 +669,7 @@ class OrchestratorAgent:
             if patient:
                 patient_name = patient.patient_name
         
-        return await self.pharmacist.process_message(message, session_id, patient_id, patient_name)
+        return await self.pharmacist.process_message(message, session_id, patient_id, patient_name, user_id)
 
     async def _delegate_to_inventory(
         self, 
@@ -739,10 +743,11 @@ class OrchestratorAgent:
 
     async def _delegate_to_refill(
         self, 
-        patient_id: str
+        patient_id: str,
+        user_id: Optional[str] = None
     ) -> AgentOutput:
         """Delegate to RefillPredictionAgent"""
-        return await self.refill.get_refill_predictions(patient_id)
+        return await self.refill.get_refill_predictions(patient_id, user_id)
 
     def get_trace_id(self) -> Optional[str]:
         return get_trace_id()

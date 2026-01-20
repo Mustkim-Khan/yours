@@ -58,7 +58,7 @@ export default function ChatPage() {
     const prescriptionCalledRef = useRef<Set<string>>(new Set()); // Track which messages have had prescription API called
 
     // Get authenticated user and name
-    const { user, userName } = useAuth();
+    const { user, userName, idToken } = useAuth();
 
     // CRITICAL: Reset ALL state when user changes to prevent entity leakage between users
     useEffect(() => {
@@ -226,7 +226,10 @@ export default function ChatPage() {
 
             const res = await fetch('/api/chat', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(idToken ? { 'Authorization': `Bearer ${idToken}` } : {})
+                },
                 body: JSON.stringify({
                     patient_id: selectedPatient.patient_id,
                     message: text,
@@ -401,7 +404,10 @@ export default function ChatPage() {
         try {
             const res = await fetch('/api/voice', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(idToken ? { 'Authorization': `Bearer ${idToken}` } : {})
+                },
                 body: JSON.stringify({
                     audio_base64: audioBase64,
                     patient_id: selectedPatient.patient_id,
@@ -598,7 +604,10 @@ export default function ChatPage() {
                                                     try {
                                                         const res = await fetch('/api/prescription/upload', {
                                                             method: 'POST',
-                                                            headers: { 'Content-Type': 'application/json' },
+                                                            headers: {
+                                                                'Content-Type': 'application/json',
+                                                                ...(idToken ? { 'Authorization': `Bearer ${idToken}` } : {})
+                                                            },
                                                             body: JSON.stringify({
                                                                 session_id: `session-${selectedPatient?.patient_id}`,
                                                                 medicine_id: message.prescriptionUpload.medicine_id || '',

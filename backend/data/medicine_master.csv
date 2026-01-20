@@ -1,5 +1,5 @@
 medicine_id,name,strength,form,category,stock_level,price,prescription_required,last_updated
-med_001,Metformin,500mg,tablet,Diabetes,142,0.15,True,2025-01-10
+med_001,Metformin,500mg,tablet,Diabetes,140,0.15,True,2025-01-10
 med_002,Amoxicillin,500mg,capsule,Antibiotic,45,0.4,True,2025-01-12
 med_003,Ibuprofen,200mg,tablet,Pain Relief,500,0.1,False,2025-01-14
 med_004,Lisinopril,10mg,tablet,Cardiovascular,8,0.25,True,2025-01-08
@@ -7,7 +7,7 @@ med_005,Atorvastatin,20mg,tablet,Cardiovascular,200,0.3,True,2025-01-11
 med_006,Cetirizine,10mg,tablet,Allergy,100,0.5,False,2025-01-05
 med_007,Albuterol,90mcg,inhaler,Respiratory,0,25.0,True,2025-01-01
 med_008,Omeprazole,20mg,capsule,Gastrointestinal,120,0.6,False,2025-01-09
-med_009,Paracetamol,500mg,tablet,Pain Relief,942,0.05,False,2025-01-15
+med_009,Paracetamol,500mg,tablet,Pain Relief,941,0.05,False,2025-01-15
 med_010,Sertraline,50mg,tablet,Psychiatry,59,0.45,True,2025-01-13
 med_011,Insulin Glargine,100 units/mL,pen,Diabetes,15,45.0,True,2025-01-10
 med_012,Amlodipine,5mg,tablet,Cardiovascular,90,0.2,True,2025-01-12
@@ -16,6 +16,6 @@ med_014,Azithromycin,250mg,tablet,Antibiotic,0,1.2,True,2025-01-14
 med_015,Gabapentin,300mg,capsule,Neurology,200,0.35,True,2025-01-11
 med_016,Levothyroxine,50mcg,tablet,Hormonal,180,0.18,True,2025-01-08
 med_017,Losartan,50mg,tablet,Cardiovascular,75,0.28,True,2025-01-09
-med_018,Vitamin D3,1000IU,softgel,Supplement,500,0.08,False,2025-01-01
+med_018,Vitamin D3,1000IU,softgel,Supplement,498,0.08,False,2025-01-01
 med_019,Doxycycline,100mg,capsule,Antibiotic,50,0.55,True,2025-01-13
 med_020,Pantoprazole,40mg,tablet,Gastrointestinal,90,0.4,True,2025-01-10
