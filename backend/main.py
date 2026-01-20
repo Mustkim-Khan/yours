@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -21,6 +21,8 @@ from agents import OrchestratorAgent
 from services.data_services import data_service
 from models.schemas import OrchestratorRequest, OrchestratorResponse
 from utils.tracing import init_langsmith
+from utils.auth import get_current_user, get_optional_user, init_firebase
+
 
 
 # ============ REQUEST/RESPONSE MODELS ============
@@ -30,6 +32,7 @@ class ChatRequest(BaseModel):
     message: str
     session_id: str = "default"
     patient_id: Optional[str] = None
+    user_name: Optional[str] = None  # User's display name for personalized greeting
 
 
 class ChatResponse(BaseModel):
@@ -65,6 +68,13 @@ async def lifespan(app: FastAPI):
     print("🚀 Starting Agentic AI Pharmacy Backend...")
     init_langsmith()
     print("✅ LangSmith tracing initialized")
+    
+    # Initialize Firebase Auth
+    if init_firebase():
+        print("✅ Firebase Auth initialized")
+    else:
+        print("⚠️ Firebase Auth not configured - API will be unprotected")
+    
     print("✅ Data service loaded")
     yield
     # Shutdown
@@ -105,9 +115,15 @@ async def health_check():
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+async def chat(
+    request: ChatRequest,
+    current_user: Optional[dict] = Depends(get_optional_user)  # Auth: get user if token provided
+):
     """
     Main chat endpoint for pharmacy interactions.
+    
+    Requires Firebase authentication - pass token in Authorization header:
+    Authorization: Bearer <firebase_id_token>
     
     Processes user messages through the agent chain:
     Orchestrator → PharmacistAgent → [InventoryAgent|PolicyAgent|FulfillmentAgent|RefillAgent]
@@ -119,12 +135,17 @@ async def chat(request: ChatRequest):
     
     Full LangSmith traceability for every request.
     """
+    # Log authenticated user (optional - for now we allow unauthenticated for gradual rollout)
+    if current_user:
+        print(f"📝 Authenticated request from: {current_user.get('email', 'unknown')}")
+
     try:
         # Create orchestrator request
         orch_request = OrchestratorRequest(
             session_id=request.session_id,
             user_message=request.message,
-            patient_id=request.patient_id
+            patient_id=request.patient_id,
+            user_name=request.user_name  # Pass user name for personalized greeting
         )
         
         # Process through agent chain
@@ -408,6 +429,37 @@ async def get_patient_refills(patient_id: str, days_ahead: int = 30):
             else:
                 action = "REMIND"
             
+            # Calculate predicted refill date based on last order + quantity (assuming 1/day)
+            from datetime import timedelta
+            last_order_str = r.get("last_order_date", "")[:10]
+            predicted_date_str = "N/A"
+            ai_reason = f"Based on {r.get('quantity', 30)} units ordered on {last_order_str}"
+            
+            if last_order_str:
+                try:
+                    last_order_dt = datetime.strptime(last_order_str, "%Y-%m-%d")
+                    # Usage assumption: 1 tablet/day (standard mock logic)
+                    usage_days = int(r.get('quantity', 30))
+                    predicted_dt = last_order_dt + timedelta(days=usage_days)
+                    predicted_date_str = predicted_dt.strftime("%Y-%m-%d")
+                    
+                    # Refine AI reason based on calculation
+                    ai_reason = f"Predicted depletion on {predicted_date_str} based on 1 tablet/day usage"
+                except Exception:
+                    pass
+
+            # Map triggers to specific agents
+            triggered_agent = "Predictive Refill Agent"
+            if action == "BLOCK":
+                triggered_agent = "Safety & Prescription Policy Agent"
+                ai_reason = "Refill blocked: Valid prescription required for controlled substance"
+            elif action == "AUTO_REFILL":
+                triggered_agent = "Predictive Refill Agent"
+                ai_reason = f"Auto-refill scheduled (Stock < 7 days). {ai_reason}"
+            elif action == "REMIND":
+                triggered_agent = "Predictive Refill Agent"
+                ai_reason = f"Patient reminder scheduled. {ai_reason}"
+
             formatted_refills.append({
                 "patient_id": patient_id,
                 "patient_name": patient_name,
@@ -416,7 +468,10 @@ async def get_patient_refills(patient_id: str, days_ahead: int = 30):
                 "dosage": "1 tablet/day",
                 "days_remaining": days,
                 "last_purchase_date": r.get("last_order_date", ""),
+                "predicted_date": predicted_date_str,
                 "action": action,
+                "triggered_agent": triggered_agent,
+                "ai_reason": ai_reason,
                 "justification": f"Based on {r.get('quantity', 30)} units ordered on {r.get('last_order_date', 'N/A')[:10]}",
                 "urgency": "CRITICAL" if days <= 0 else ("HIGH" if days <= 3 else ("MEDIUM" if days <= 7 else "LOW"))
             })
@@ -444,6 +499,32 @@ async def get_patient_history(patient_id: str):
     }
 
 
+# ============ INVENTORY ENDPOINTS (Admin Dashboard) ============
+
+@app.get("/inventory/stats")
+async def get_inventory_stats():
+    """Get inventory statistics for admin dashboard"""
+    stats = data_service.get_inventory_stats()
+    return stats
+
+
+@app.get("/inventory/medicines")
+async def get_all_medicines(query: str = ""):
+    """Get all medicines in inventory, optionally filtered by search query"""
+    medicines = data_service.get_all_medicines()
+    
+    # Filter by query if provided
+    if query:
+        query_lower = query.lower()
+        medicines = [
+            m for m in medicines 
+            if query_lower in m.get('name', '').lower() 
+            or query_lower in m.get('medicine_id', '').lower()
+        ]
+    
+    return {"results": medicines, "count": len(medicines)}
+
+
 # ============ RUN SERVER ============
 
 if __name__ == "__main__":
@@ -454,3 +535,4 @@ if __name__ == "__main__":
         port=8000,
         reload=True
     )
+

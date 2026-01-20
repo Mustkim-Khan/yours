@@ -8,7 +8,7 @@ import {
 interface Medicine {
     medicine_id: string;
     id?: string;  // Backend may return either medicine_id or id
-    name: string;
+    medicine_name: string;  // Backend returns medicine_name, not name
     strength: string;
     form: string;
     stock_level: number;
@@ -40,8 +40,8 @@ export default function AdminPage() {
     const fetchData = async () => {
         try {
             const [medicinesRes, statsRes] = await Promise.all([
-                fetch('/api/inventory/search?query='),
-                fetch('/api/inventory/stats'),
+                fetch('http://localhost:8000/inventory/medicines'),
+                fetch('http://localhost:8000/inventory/stats'),
             ]);
 
             const medicinesData = await medicinesRes.json();
@@ -59,8 +59,9 @@ export default function AdminPage() {
         }
     };
 
+
     const filteredMedicines = Array.isArray(medicines) ? medicines.filter(med =>
-        (med.name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (med.medicine_name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
         (med.medicine_id || med.id || '').toLowerCase().includes(searchQuery.toLowerCase())
     ) : [];
 
@@ -143,7 +144,7 @@ export default function AdminPage() {
                                 return (
                                     <tr key={med.medicine_id} className="border-b border-gray-50 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
                                         <td className="px-6 py-4 text-sm font-medium text-gray-900 dark:text-white">
-                                            {med.name}
+                                            {med.medicine_name}
                                         </td>
                                         <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-300">
                                             {med.strength}
@@ -158,7 +159,7 @@ export default function AdminPage() {
                                         </td>
                                         <td className="px-6 py-4">
                                             {med.prescription_required ? (
-                                                <span className="px-2 py-1 bg-indigo-5 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 text-xs font-medium rounded">
+                                                <span className="px-2 py-1 bg-indigo-50 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 text-xs font-medium rounded">
                                                     Rx Required
                                                 </span>
                                             ) : (

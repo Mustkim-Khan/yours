@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { Send, Mic, MicOff, Loader2, Paperclip, CheckCircle, ExternalLink, Settings, ChevronRight, Clock, ChevronDown, User, Volume2, Pill, Upload, AlertCircle, X, Truck } from 'lucide-react';
 import PrescriptionUploadCard from '@/components/PrescriptionUploadCard';
+import { useAuth } from '@/lib/AuthContext';
+import { getOrCreateConversation, saveMessage, loadMessages, getLatestConversation, updateConversationEntities, getConversationEntities } from '@/lib/firestoreService';
 
 interface Patient {
     patient_id: string;
@@ -49,83 +51,89 @@ export default function ChatPage() {
     const [autoSaveChats, setAutoSaveChats] = useState(true);
     const [desktopNotifications, setDesktopNotifications] = useState(false);
     const [prescriptionVerified, setPrescriptionVerified] = useState(false); // Track if prescription is verified
-    // const [isPatientDropdownOpen, setIsPatientDropdownOpen] = useState(false); // Removed
+    const [conversationId, setConversationId] = useState<string | null>(null); // Firestore conversation ID
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
     const prescriptionCalledRef = useRef<Set<string>>(new Set()); // Track which messages have had prescription API called
-    // const dropdownRef = useRef<HTMLDivElement>(null); // Removed
+
+    // Get authenticated user and name
+    const { user, userName } = useAuth();
+
+    // CRITICAL: Reset ALL state when user changes to prevent entity leakage between users
+    useEffect(() => {
+        // Reset extracted entities
+        setCurrentEntities(null);
+        // Reset messages
+        setMessages([]);
+        // Reset conversation
+        setConversationId(null);
+        // Reset prescription state
+        setPrescriptionVerified(false);
+        prescriptionCalledRef.current.clear();
+        console.log('[Auth] User changed, reset all entity/conversation state');
+    }, [user?.uid]);
 
     useEffect(() => {
         fetchPatients();
     }, []);
 
-    // Load messages from Backend when patient changes
+    // Load messages from Firestore when patient changes
     useEffect(() => {
-        if (selectedPatient) {
-            fetchChatHistory(selectedPatient.patient_id);
+        if (selectedPatient && user) {
+            loadConversationHistory(user.uid, selectedPatient.patient_id);
 
             // Reset prescription state for new patient
             setPrescriptionVerified(false);
             prescriptionCalledRef.current.clear();
-
-            // Load saved entities for this patient (Keeping local for entities as they are transient view state)
-            const savedEntities = localStorage.getItem(`patient_entities_${selectedPatient.patient_id}`);
-            if (savedEntities) {
-                try {
-                    setCurrentEntities(JSON.parse(savedEntities));
-                } catch (e) {
-                    console.error('Failed to parse saved entities:', e);
-                    setCurrentEntities(null);
-                }
-            } else {
-                setCurrentEntities(null);
-            }
         }
-    }, [selectedPatient?.patient_id]);
+    }, [selectedPatient?.patient_id, user?.uid]);
 
-    const fetchChatHistory = async (patientId: string) => {
+    // Load conversation history from Firestore
+    const loadConversationHistory = async (userId: string, patientId: string) => {
         setIsLoading(true);
         try {
-            const res = await fetch(`/api/chat/history/${patientId}`);
-            if (res.ok) {
-                const history = await res.json();
-                // Map backend history to frontend Message format
-                const formattedMessages: Message[] = history.map((item: any, index: number) => ({
-                    id: `hist-${index}`,
-                    role: item.role,
-                    content: item.content,
-                    timestamp: new Date(item.timestamp)
-                }));
-                setMessages(formattedMessages);
+            // 1. Get or create conversation (Simplifying to avoid complex index requirements)
+            // previously getLatestConversation failed due to missing index for orderBy('updatedAt')
+            const convId = await getOrCreateConversation(userId, patientId);
+
+            if (!convId) throw new Error('Failed to obtain conversation ID');
+
+            setConversationId(convId);
+            console.log('[Firestore] Conversation ID set:', convId);
+
+            // 2. Load messages
+            const firestoreMessages = await loadMessages(convId);
+            const formattedMessages: Message[] = firestoreMessages.map((msg, index) => ({
+                id: `hist-${index}`,
+                role: msg.sender === 'user' ? 'user' : 'assistant',
+                content: msg.text,
+                timestamp: msg.timestamp?.toDate() || new Date(),
+                // Restore rich metadata if available
+                ...(msg.metadata || {})
+            }));
+            setMessages(formattedMessages);
+            console.log('[Firestore] Loaded', formattedMessages.length, 'messages');
+
+            // 3. Load extracted entities state
+            const persistedEntities = await getConversationEntities(convId);
+            if (persistedEntities) {
+                setCurrentEntities(persistedEntities);
             } else {
-                console.error("Failed to load history");
-                setMessages([]);
+                setCurrentEntities(null); // Ensure clean state if none found
             }
-        } catch (e) {
-            console.error("Error fetching history:", e);
+
+        } catch (e: any) {
+            console.error('[Firestore] Error loading history:', e);
             setMessages([]);
+            setCurrentEntities(null);
         } finally {
             setIsLoading(false);
         }
     };
 
     // Save entities to localStorage whenever they change
-    useEffect(() => {
-        if (selectedPatient) {
-            if (currentEntities) {
-                localStorage.setItem(`patient_entities_${selectedPatient.patient_id}`, JSON.stringify(currentEntities));
-            } else {
-                // Optional: decide if we want to remove it when null, or keep last known state?
-                // User said "dont change it until that customer next order".
-                // So if it becomes null (explicit clear), we might want to remove it.
-                // But generally we only set it to null on patient switch (handled above) or if explicitly cleared.
-                // Let's remove if null to keep it clean.
-                // Actually, if we want to "persist", we simply setItem.
-                // If it is null on patient switch, the logic above handles loading.
-            }
-        }
-    }, [currentEntities, selectedPatient?.patient_id]);
+
 
     useEffect(() => {
         scrollToBottom();
@@ -200,6 +208,15 @@ export default function ChatPage() {
         setIsLoading(true);
         // setCurrentEntities(null); // Removed to persist entities across turns
 
+        // Save user message to Firestore (only text, no agent data)
+        if (conversationId) {
+            console.log('[Firestore] Saving user message to:', conversationId);
+            saveMessage(conversationId, { sender: 'user', text, type: 'chat' })
+                .catch(err => console.error('[Firestore] Failed to save user message:', err));
+        } else {
+            console.error('[Firestore] CRITICAL: No conversationId set! Message will NOT be saved.');
+        }
+
         try {
             // Build conversation history from previous messages
             const conversationHistory = messages.map(msg => ({
@@ -215,6 +232,7 @@ export default function ChatPage() {
                     message: text,
                     session_id: `session-${selectedPatient.patient_id}`,
                     conversation_history: conversationHistory,
+                    user_name: userName || undefined, // Pass user name for agent greeting
                 }),
             });
 
@@ -226,7 +244,7 @@ export default function ChatPage() {
                 role: 'assistant',
                 content: data.response,
                 timestamp: new Date(),
-                extractedEntities: data.extracted_entities,
+                extractedEntities: data.extracted_entities, // We store this in metadata
                 safetyResult: data.safety_result,
                 orderPreview: data.order_preview,
                 order: data.order,
@@ -239,24 +257,75 @@ export default function ChatPage() {
 
             setMessages(prev => [...prev, assistantMessage]);
 
+            // Save assistant message to Firestore with RICH METADATA
+            if (conversationId) {
+                const messageType = data.order ? 'order_summary' : 'chat';
+
+                // Construct metadata strictly for UI reconstruction
+                // Firestore throws if any value is 'undefined', so we must default to null
+                const metadata = {
+                    extractedEntities: data.extracted_entities || null,
+                    safetyResult: data.safety_result || null,
+                    orderPreview: data.order_preview || null,
+                    order: data.order || null,
+                    traceUrl: data.trace_url || null,
+                    aiAnnotation: data.ai_annotation || null,
+                    badges: data.badges || null,
+                    prescriptionUpload: data.prescription_upload || null,
+                };
+
+                saveMessage(conversationId, {
+                    sender: 'assistant',
+                    text: data.response,
+                    type: messageType,
+                    metadata: metadata // Persist rich data
+                }).catch(err => console.error('[Firestore] Failed to save assistant message:', err));
+            }
+
             // Logic to persist or update extracted entities
+            // Priority: 1) extracted_entities, 2) order_preview items, 3) confirmed order items
+            let newEntities = null;
             if (data.extracted_entities && data.extracted_entities.entities && data.extracted_entities.entities.length > 0) {
-                // 1. If new entities are extracted, update the view (Start of new order)
-                setCurrentEntities(data.extracted_entities);
+                // 1. If new entities are extracted directly, update the view
+                newEntities = data.extracted_entities;
+                setCurrentEntities(newEntities);
+            } else if (data.order_preview && data.order_preview.items && data.order_preview.items.length > 0) {
+                // 2. If order preview is returned, extract entities from preview items
+                newEntities = {
+                    entities: data.order_preview.items.map((item: any) => ({
+                        medicine: item.medicine_name,
+                        dosage: item.strength || '-',
+                        quantity: item.quantity,
+                        frequency: null,
+                        duration: item.supply_days ? `${item.supply_days} days` : null,
+                        prescription_required: item.prescription_required,
+                        stock_status: 'OK'  // If we have a preview, stock is OK
+                    }))
+                };
+                setCurrentEntities(newEntities);
             } else if (data.order) {
-                // 2. If order is confirmed, persist the confirmed items as entities
+                // 3. If order is confirmed, persist the confirmed items as entities
                 const confirmedEntities = {
                     entities: data.order.items.map((item: any) => ({
                         medicine: item.medicine_name,
-                        dosage: item.strength,
+                        dosage: item.strength || '-',
                         quantity: item.quantity,
                         frequency: null,
-                        duration: null
+                        duration: null,
+                        prescription_required: null,
+                        stock_status: 'OK'
                     }))
                 };
+                newEntities = confirmedEntities;
                 setCurrentEntities(confirmedEntities);
             }
-            // 3. Otherwise, keep existing entities (Propagates persistence)
+
+            // PERSIST ENTITIES TO FIRESTORE IMMEDIATELY
+            if (newEntities && conversationId) {
+                updateConversationEntities(conversationId, newEntities)
+                    .catch(err => console.error('[Firestore] Failed to persist entities:', err));
+            }
+            // 4. Otherwise, keep existing entities (Propagates persistence)
 
             if (data.trace_url) {
                 setLatestTraceUrl(data.trace_url);
@@ -395,19 +464,21 @@ export default function ChatPage() {
                         <div
                             className="w-full flex items-center gap-3 px-3 py-2 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700"
                         >
-                            <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-200">
-                                {selectedPatient ? (
-                                    <img
-                                        src={`/patients/${selectedPatient.patient_id}.png`}
-                                        alt={selectedPatient.patient_name}
-                                        className="w-full h-full object-cover"
-                                    />
-                                ) : (
-                                    <span className="w-full h-full flex items-center justify-center text-gray-400 text-xs">?</span>
-                                )}
+                            <div className="w-10 h-10 rounded-full overflow-hidden bg-white flex-shrink-0 border border-gray-200 dark:border-gray-600">
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                    src={(() => {
+                                        const name = (userName || 'Guest').split(' ')[0].toLowerCase();
+                                        if (['sh', 'h', 'n', 'k', 'r', 't'].some(end => name.endsWith(end))) return '/avatars/male.png';
+                                        if (['a', 'i', 'y'].some(end => name.endsWith(end))) return '/avatars/female.png';
+                                        return '/avatars/neutral.png';
+                                    })()}
+                                    alt="Patient avatar"
+                                    className="w-full h-full object-cover"
+                                />
                             </div>
                             <span className="flex-1 text-left text-sm font-medium text-gray-900 dark:text-white">
-                                {selectedPatient?.patient_name?.split(' ')[0] || 'Jane'}
+                                {userName || "Guest"}
                             </span>
                         </div>
                     </div>
@@ -421,33 +492,35 @@ export default function ChatPage() {
                         <div>
                             <p className="text-xs text-gray-500 dark:text-gray-400">Medicine:</p>
                             <p className="text-sm font-medium text-gray-900 dark:text-gray-200">
-                                {displayEntities?.medicine || 'Metformin 500mg'}
+                                {displayEntities?.medicine || '-'}
                             </p>
                         </div>
                         <div>
                             <p className="text-xs text-gray-500 dark:text-gray-400">Dosage:</p>
                             <p className="text-sm font-medium text-gray-900 dark:text-gray-200">
-                                {displayEntities?.dosage || 'Two tablets daily'}
+                                {displayEntities?.dosage || '-'}
                             </p>
                         </div>
                         <div>
                             <p className="text-xs text-gray-500 dark:text-gray-400">Quantity:</p>
                             <p className="text-sm font-medium text-gray-900 dark:text-gray-200">
-                                {displayEntities?.quantity || '90'} tablets
+                                {displayEntities?.quantity ? `${displayEntities.quantity} tablets` : '-'}
                             </p>
                         </div>
                         <div>
                             <p className="text-xs text-gray-500 dark:text-gray-400">Supply Duration:</p>
-                            <p className="text-sm font-medium text-gray-900 dark:text-gray-200">45 days</p>
+                            <p className="text-sm font-medium text-gray-900 dark:text-gray-200">
+                                {displayEntities?.duration || '-'}
+                            </p>
                         </div>
 
-                        {/* Badges */}
+                        {/* Badges - show empty state when no entities */}
                         <div className="flex gap-2 mt-2">
                             <span className="px-2 py-1 bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 text-xs font-medium rounded">
-                                Prescription: Yes
+                                Prescription: {displayEntities?.prescription_required ? 'Yes' : '-'}
                             </span>
                             <span className="px-2 py-1 bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 text-xs font-medium rounded">
-                                Stock: OK
+                                Stock: {displayEntities?.stock_status || '-'}
                             </span>
                         </div>
                     </div>
@@ -545,6 +618,27 @@ export default function ChatPage() {
                                                                 orderPreview: data.order_preview,
                                                             };
                                                             setMessages(prev => [...prev, previewMsg]);
+
+                                                            // PERSIST this synthesized message to Firestore
+                                                            if (conversationId) {
+                                                                const metadata = {
+                                                                    orderPreview: data.order_preview,
+                                                                    // Default others to null to respect Firestore strictness
+                                                                    extractedEntities: null,
+                                                                    safetyResult: null,
+                                                                    order: null,
+                                                                    traceUrl: null,
+                                                                    aiAnnotation: null,
+                                                                    badges: null,
+                                                                    prescriptionUpload: null,
+                                                                };
+                                                                saveMessage(conversationId, {
+                                                                    sender: 'assistant',
+                                                                    text: previewMsg.content,
+                                                                    type: 'order_summary',
+                                                                    metadata: metadata
+                                                                }).catch(err => console.error('[Firestore] Failed to save preview message:', err));
+                                                            }
                                                         }
                                                     } catch (error) {
                                                         console.error('Prescription upload failed:', error);

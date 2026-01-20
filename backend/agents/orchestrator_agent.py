@@ -110,7 +110,8 @@ class OrchestratorAgent:
         session_id: str, 
         order_info: Dict[str, str],
         evidence: List[str],
-        patient_id: str
+        patient_id: str,
+        user_name: Optional[str] = None  # Firestore user name for deterministic injection
     ):
         """Save pending prescription order to session for later resume."""
         state = self._get_session_state(session_id)
@@ -118,6 +119,7 @@ class OrchestratorAgent:
             'order_info': order_info,
             'evidence': evidence,
             'patient_id': patient_id,
+            'user_name': user_name,  # Store for deterministic use in resume
             'requires_prescription': True,
             'prescription_uploaded': False,
             'prescription_verified': False
@@ -203,7 +205,8 @@ class OrchestratorAgent:
         pharmacist_output = await self._delegate_to_pharmacist(
             request.user_message,
             request.session_id,
-            request.patient_id
+            request.patient_id,
+            request.user_name  # Pass user_name from Firestore
         )
         
         agent_chain.append("PharmacistAgent")
@@ -237,7 +240,8 @@ class OrchestratorAgent:
                         request.session_id,
                         order_info,
                         all_evidence.copy(),
-                        request.patient_id or "GUEST"
+                        request.patient_id or "GUEST",
+                        request.user_name  # Pass Firestore user_name for deterministic resume
                     )
                     # Set UI card type to show PrescriptionUploadCard
                     ui_card_type = UICardType.PRESCRIPTION_UPLOAD
@@ -325,13 +329,8 @@ class OrchestratorAgent:
             
             quantity = int(order_info["quantity"])
             
-            # Look up actual patient name
-            patient_name = "Guest Customer"
-            if request.patient_id and self._data_service:
-                patients = self._data_service.get_all_patients()
-                patient = next((p for p in patients if p.patient_id == request.patient_id), None)
-                if patient:
-                    patient_name = patient.patient_name
+            # DETERMINISTIC: Use Firestore user_name, never infer from demo CSV
+            patient_name = request.user_name or "Guest Customer"
             
             order_preview_data = OrderPreviewData(
                 preview_id=f"PRV-{request.session_id[:8].upper()}",
@@ -535,13 +534,9 @@ class OrchestratorAgent:
         
         medicine_name = order_info.get("medicine_name", "your medicine")
         
-        # Look up patient name
-        patient_name = "Guest Customer"
-        if patient_id and self._data_service:
-            patients = self._data_service.get_all_patients()
-            patient = next((p for p in patients if p.patient_id == patient_id), None)
-            if patient:
-                patient_name = patient.patient_name
+        # DETERMINISTIC: Use stored user_name from session, never lookup demo CSV
+        # Note: For prescription flow, name comes from pending prescription or fallback
+        patient_name = pending.get('user_name') or "Guest Customer"
         
         # Get price and build order preview
         quantity = int(order_info.get("quantity", 1))
@@ -605,18 +600,14 @@ class OrchestratorAgent:
         self,
         order_id: str,
         order_info: Dict[str, str],
-        patient_id: str
+        patient_id: str,
+        user_name: Optional[str] = None  # Firestore user name (deterministic)
     ) -> OrderConfirmationData:
         """Build order confirmation data from order info."""
         from datetime import datetime
         
-        # Look up patient name
-        patient_name = "Guest Customer"
-        if patient_id and self._data_service:
-            patients = self._data_service.get_all_patients()
-            patient = next((p for p in patients if p.patient_id == patient_id), None)
-            if patient:
-                patient_name = patient.patient_name
+        # DETERMINISTIC: Use Firestore user_name, never lookup demo CSV
+        patient_name = user_name or "Guest Customer"
         
         quantity = int(order_info.get("quantity", 1))
         unit_price = 5.00  # Default
@@ -662,12 +653,13 @@ class OrchestratorAgent:
         self,
         message: str,
         session_id: str,
-        patient_id: Optional[str]
+        patient_id: Optional[str],
+        user_name: Optional[str] = None  # User name from Firestore (priority)
     ) -> AgentOutput:
         """Delegate to PharmacistAgent"""
-        # Look up patient name
-        patient_name = None
-        if patient_id and self._data_service:
+        # Use user_name from Firestore if provided, otherwise fallback to demo patient lookup
+        patient_name = user_name
+        if not patient_name and patient_id and self._data_service:
             patients = self._data_service.get_all_patients()
             patient = next((p for p in patients if p.patient_id == patient_id), None)
             if patient:

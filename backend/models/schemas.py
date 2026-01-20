@@ -270,6 +270,7 @@ class OrchestratorRequest(BaseModel):
     session_id: str
     user_message: str
     patient_id: Optional[str] = None
+    user_name: Optional[str] = None  # User's display name from Firestore for greeting
     conversation_history: List[dict] = Field(default_factory=list)
 
 

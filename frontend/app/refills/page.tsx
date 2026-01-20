@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import {
     RefreshCw, Clock, AlertTriangle, CheckCircle,
     Search, ChevronDown, ChevronLeft, ChevronRight,
-    TrendingUp, Shield, Package
+    TrendingUp, Shield, Package, Info
 } from 'lucide-react';
 
 interface RefillPrediction {
@@ -15,6 +15,9 @@ interface RefillPrediction {
     dosage: string;
     days_remaining: number;
     last_purchase_date: string;
+    predicted_date?: string;
+    triggered_agent?: string;
+    ai_reason?: string;
     action: 'REMIND' | 'AUTO_REFILL' | 'BLOCK';
     justification: string;
     urgency: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
@@ -207,6 +210,9 @@ export default function RefillsPage() {
                                 <th className="px-6 py-3 font-medium">Patient Name</th>
                                 <th className="px-6 py-3 font-medium">Medicine</th>
                                 <th className="px-6 py-3 font-medium">Dosage</th>
+                                <th className="px-6 py-3 font-medium">Last Order</th>
+                                <th className="px-6 py-3 font-medium">Predicted Refill (AI)</th>
+                                <th className="px-6 py-3 font-medium">Triggered Agent</th>
                                 <th className="px-6 py-3 font-medium">Days Remaining</th>
                                 <th className="px-6 py-3 font-medium">Refill Status</th>
                                 <th className="px-6 py-3 font-medium">AI Action Status</th>
@@ -215,14 +221,14 @@ export default function RefillsPage() {
                         <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
                             {loading ? (
                                 <tr>
-                                    <td colSpan={6} className="text-center py-8">
+                                    <td colSpan={9} className="text-center py-8">
                                         <RefreshCw className="w-6 h-6 text-gray-400 mx-auto animate-spin" />
                                         <p className="text-gray-500 dark:text-gray-400 mt-2">Loading...</p>
                                     </td>
                                 </tr>
                             ) : paginatedRefills.length === 0 ? (
                                 <tr>
-                                    <td colSpan={6} className="text-center py-8">
+                                    <td colSpan={9} className="text-center py-8">
                                         <CheckCircle className="w-8 h-8 text-green-400 mx-auto mb-2" />
                                         <p className="text-gray-600 dark:text-gray-400 font-medium">All caught up!</p>
                                     </td>
@@ -242,6 +248,26 @@ export default function RefillsPage() {
                                             </td>
                                             <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-300">
                                                 {refill.dosage || '1 tablet/day'}
+                                            </td>
+                                            <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-300">
+                                                {refill.last_purchase_date ? new Date(refill.last_purchase_date).toLocaleDateString() : '-'}
+                                            </td>
+                                            <td className="px-6 py-4 text-sm font-medium text-indigo-600 dark:text-indigo-400">
+                                                {refill.predicted_date || '-'}
+                                            </td>
+                                            <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-300">
+                                                <div className="flex items-center gap-2">
+                                                    <span>{refill.triggered_agent || 'System'}</span>
+                                                    {refill.ai_reason && (
+                                                        <div className="group relative">
+                                                            <Info className="w-4 h-4 text-gray-400 hover:text-indigo-500 cursor-help" />
+                                                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10 pointer-events-none shadow-lg">
+                                                                {refill.ai_reason}
+                                                                <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
                                             </td>
                                             <td className="px-6 py-4 text-sm">
                                                 <span className={refill.days_remaining < 0 ? 'text-red-600 dark:text-red-400' : 'text-gray-600 dark:text-gray-300'}>
