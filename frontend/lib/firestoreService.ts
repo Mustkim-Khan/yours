@@ -26,6 +26,7 @@ export interface UserDocument {
     name?: string;  // Optional for backward compatibility with existing users
     email: string;
     role: 'customer' | 'admin';
+    phone?: string; // E.164 phone number
     createdAt: Timestamp;
 }
 
@@ -49,18 +50,35 @@ export interface MessageDocument {
  * Ensure user document exists in Firestore.
  * Creates document if it doesn't exist (for login auto-creation).
  * Does NOT overwrite existing documents (preserves admin role).
+ * Updates phone number only if provided and not already set.
  */
-export async function ensureUserDocument(uid: string, email: string): Promise<void> {
+export async function ensureUserDocument(
+    uid: string,
+    email: string,
+    name?: string,
+    phone?: string
+): Promise<void> {
     const userRef = doc(db, 'users', uid);
     const userSnap = await getDoc(userRef);
 
     if (!userSnap.exists()) {
-        await setDoc(userRef, {
+        const userData: any = {
             email,
             role: 'customer', // Default role for new users
             createdAt: serverTimestamp(),
-        });
+        };
+        if (name) userData.name = name;
+        if (phone) userData.phone = phone;
+
+        await setDoc(userRef, userData);
         console.log('[Firestore] Created user document for:', uid);
+    } else {
+        // If document exists, check if we need to add phone number (never overwrite)
+        const currentData = userSnap.data();
+        if (phone && !currentData.phone) {
+            await setDoc(userRef, { phone }, { merge: true });
+            console.log('[Firestore] Updated user phone for:', uid);
+        }
     }
 }
 

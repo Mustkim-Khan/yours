@@ -42,10 +42,11 @@ export default function AuthGuard({ children }: AuthGuardProps) {
             // Define route ownership
             const isAdminRoute = pathname.startsWith('/admin');
             const isRefillsRoute = pathname.startsWith('/refills');
+            const isOrdersRoute = pathname.startsWith('/orders');
             const isChatRoute = pathname === '/'; // Chat is at root
 
             if (userRole === 'customer') {
-                // Customer can ONLY access / (chat)
+                // Customer can access / (chat) and /orders
                 // Block /admin and /refills
                 if (isAdminRoute || isRefillsRoute) {
                     router.push('/');
@@ -53,8 +54,8 @@ export default function AuthGuard({ children }: AuthGuardProps) {
                 }
             } else if (userRole === 'admin') {
                 // Admin can access /admin and /refills
-                // Block / (chat)
-                if (isChatRoute) {
+                // Block / (chat) and /orders
+                if (isChatRoute || isOrdersRoute) {
                     router.push('/admin');
                     return;
                 }
@@ -107,7 +108,9 @@ export default function AuthGuard({ children }: AuthGuardProps) {
         const isRefillsRoute = pathname.startsWith('/refills');
         const isChatRoute = pathname === '/';
 
-        // Customer trying to access admin or refills routes
+        const isOrdersRoute = pathname.startsWith('/orders');
+
+        // Customer trying to access admin or refills routes (render block)
         if (userRole === 'customer' && (isAdminRoute || isRefillsRoute)) {
             return (
                 <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-blue-50 to-emerald-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
@@ -124,8 +127,8 @@ export default function AuthGuard({ children }: AuthGuardProps) {
             );
         }
 
-        // Admin trying to access chat route
-        if (userRole === 'admin' && isChatRoute) {
+        // Admin trying to access chat or orders route
+        if (userRole === 'admin' && (isChatRoute || isOrdersRoute)) {
             return (
                 <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-blue-50 to-emerald-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
                     <div className="text-center">

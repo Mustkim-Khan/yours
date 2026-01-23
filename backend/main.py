@@ -19,6 +19,7 @@ load_dotenv()
 # Import agents and services
 from agents import OrchestratorAgent
 from services.data_services import data_service
+from services.firestore_service import get_orders, get_db  # Import Firestore service
 from models.schemas import OrchestratorRequest, OrchestratorResponse
 from utils.tracing import init_langsmith
 from utils.auth import get_current_user, get_optional_user, init_firebase
@@ -33,6 +34,7 @@ class ChatRequest(BaseModel):
     session_id: str = "default"
     patient_id: Optional[str] = None
     user_name: Optional[str] = None  # User's display name for personalized greeting
+    conversation_id: Optional[str] = None  # Firestore conversation ID for loading history
 
 
 class ChatResponse(BaseModel):
@@ -76,6 +78,12 @@ async def lifespan(app: FastAPI):
         print("⚠️ Firebase Auth not configured - API will be unprotected")
     
     print("✅ Data service loaded")
+    
+    # Start Background Scheduler
+    import asyncio
+    asyncio.create_task(run_daily_refill_check())
+    print("✅ Daily Refill Scheduler started")
+    
     yield
     # Shutdown
     print("👋 Shutting down...")
@@ -101,6 +109,44 @@ app.add_middleware(
 orchestrator = OrchestratorAgent()
 orchestrator.set_data_service(data_service)
 
+# Initialize Refill Agent for background jobs
+from agents import RefillPredictionAgent
+refill_agent = RefillPredictionAgent()
+refill_agent.set_data_service(data_service)
+
+async def run_daily_refill_check():
+    """
+    Background Task: 
+    Iterates all users -> Calculates Refills -> Updates Firestore -> Sends Notifications
+    Runs in background loop.
+    """
+    import asyncio
+    while True:
+        try:
+            print("🕒 Starting Daily Refill Check...")
+            # 1. Get all users
+            users = data_service.get_all_patients()
+            
+            for user in users:
+                # Calculate & Persist
+                alerts = await refill_agent.evaluate_patient_refills(user.patient_id)
+                
+                # Send Notifications
+                if alerts:
+                    await refill_agent.send_refill_notifications(user.patient_id, alerts)
+                    
+            print(f"✅ Daily Refill Check Complete. Checked {len(users)} users.")
+            
+            # Wait 24 hours (or 60s for demo purposes if needed, let's stick to long sleep)
+            # For hackathon demo: maybe check every 5 minutes? 
+            # Or just run once on startup and then sleep long.
+            # Let's do 60 minutes for safety or user can trigger manual.
+            await asyncio.sleep(3600) 
+            
+        except Exception as e:
+            print(f"❌ Background Job Error: {e}")
+            await asyncio.sleep(60) # Retry after 1 min on error
+
 
 # ============ ENDPOINTS ============
 
@@ -112,6 +158,60 @@ async def health_check():
         timestamp=datetime.now().isoformat(),
         version="1.0.0"
     )
+
+
+@app.get("/admin/refills")
+async def get_admin_refills():
+    """
+    Get aggregated refill alerts for Admin Dashboard.
+    READ-ONLY: Fetches pre-calculated alerts from user profiles.
+    """
+    try:
+        from services.firestore_service import get_db
+        db = get_db()
+        if not db:
+            return {"alerts": []}
+            
+        users_ref = db.collection("users")
+        docs = users_ref.stream()
+        
+        aggregated_alerts = []
+        
+        for doc in docs:
+            data = doc.to_dict()
+            alerts = data.get("refill_alerts", [])
+            
+            if alerts:
+                # Resolve real name
+                patient_name = data.get("name", "Unknown User")
+                patient_id = doc.id
+                
+                for alert in alerts:
+                    # Flatten for table
+                    flattened = {
+                        "patient_name": patient_name,
+                        "patient_id": patient_id,
+                        "medicine": alert.get("medicine", ""),
+                        "days_remaining": alert.get("days_remaining", 0),
+                        "status": alert.get("status", "REMIND"),
+                        "last_updated": alert.get("last_updated", ""),
+                        "refill_date": alert.get("refill_date", ""),
+                        # Detailed fields
+                        "dosage": alert.get("dosage", "1 tablet/day"),
+                        "last_order_date": alert.get("last_order_date", ""),
+                        "triggered_agent": alert.get("triggered_agent", "RefillPredictionAgent"),
+                        "ai_reason": alert.get("ai_reason", "Predicted based on order history")
+                    }
+                    aggregated_alerts.append(flattened)
+        
+        # Sort by urgency (days remaining)
+        aggregated_alerts.sort(key=lambda x: x["days_remaining"])
+        
+        return {"alerts": aggregated_alerts}
+        
+    except Exception as e:
+        print(f"Error fetching admin refills: {e}")
+        return {"alerts": [], "error": str(e)}
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -149,7 +249,8 @@ async def chat(
             user_message=request.message,
             patient_id=request.patient_id,
             user_name=request.user_name,  # Pass user name for personalized greeting
-            user_id=user_id               # Pass Firebase UID for persistence
+            user_id=user_id,              # Pass Firebase UID for persistence
+            conversation_id=request.conversation_id  # Pass Firestore conversation ID
         )
         
         # Process through agent chain
@@ -185,7 +286,8 @@ class PrescriptionUploadRequest(BaseModel):
     """Prescription upload request from frontend"""
     session_id: str
     medicine_id: str
-    prescription_file: str  # Base64 encoded file or filename
+    medicine_name: Optional[str] = None  # For validation matching
+    prescription_file: str  # Base64 encoded image data
 
 
 class PrescriptionUploadResponse(BaseModel):
@@ -197,6 +299,7 @@ class PrescriptionUploadResponse(BaseModel):
     order_id: Optional[str] = None
     trace_id: Optional[str] = None
     ui_card_type: str = "order_preview"
+    validation_result: Optional[dict] = None  # Prescription validation details
     order_preview: Optional[dict] = None
     order_confirmation: Optional[dict] = None
 
@@ -207,20 +310,49 @@ async def upload_prescription(request: PrescriptionUploadRequest):
     Handle prescription upload from frontend.
     
     Flow:
-    1. Accept prescription file (base64 or filename)
-    2. Mark prescription as verified in session
-    3. Return ORDER_PREVIEW (not confirmation yet)
-    4. User confirms preview → then order is created
+    1. Accept prescription image (base64)
+    2. Validate using AI vision (PolicyAgent)
+    3. If valid: Return ORDER_PREVIEW
+    4. If invalid: Return rejection with reason
     """
+    from agents.policy_agent import PolicyAgent
+    
     try:
-        # Resume flow with prescription - returns ORDER_PREVIEW
+        # Step 1: Validate prescription using AI vision
+        policy_agent = PolicyAgent()
+        validation_output = await policy_agent.validate_prescription(
+            image_base64=request.prescription_file,
+            medicine_name=request.medicine_name or ""
+        )
+        
+        # Check validation result
+        if validation_output.decision.value != "APPROVED":
+            # Prescription validation failed
+            return PrescriptionUploadResponse(
+                success=False,
+                message=validation_output.message or "Prescription validation failed",
+                session_id=request.session_id,
+                agent_chain=["PolicyAgent:prescription_validation_failed"],
+                order_id=None,
+                trace_id=policy_agent.get_trace_id(),
+                ui_card_type="none",
+                validation_result={
+                    "is_valid": False,
+                    "rejection_reason": validation_output.message,
+                    "evidence": validation_output.evidence
+                },
+                order_preview=None,
+                order_confirmation=None
+            )
+        
+        # Step 2: Validation passed - proceed with order
         result = await orchestrator.resume_with_prescription(
             session_id=request.session_id,
             medicine_id=request.medicine_id,
             prescription_verified=True
         )
         
-        # Prepare order preview data (not confirmation)
+        # Prepare order preview data
         order_preview = None
         if result.order_preview_data:
             order_preview = result.order_preview_data.model_dump()
@@ -231,12 +363,16 @@ async def upload_prescription(request: PrescriptionUploadRequest):
         
         return PrescriptionUploadResponse(
             success=True,
-            message=result.response_text,
+            message=f"{validation_output.message} {result.response_text}",
             session_id=result.session_id,
-            agent_chain=result.agent_chain,
+            agent_chain=["PolicyAgent:prescription_validated"] + result.agent_chain,
             order_id=result.order_created,
             trace_id=result.trace_id,
             ui_card_type=result.ui_card_type.value if result.ui_card_type else "order_preview",
+            validation_result={
+                "is_valid": True,
+                "evidence": validation_output.evidence
+            },
             order_preview=order_preview,
             order_confirmation=order_confirmation
         )
@@ -538,6 +674,64 @@ async def get_all_medicines(query: str = ""):
     return {"results": medicines, "count": len(medicines)}
 
 
+# ============ ORDER ENDPOINTS (Customer "My Orders") ============
+
+@app.get("/orders")
+async def get_user_orders(current_user: Optional[dict] = Depends(get_optional_user)):
+    """
+    Get all orders for the authenticated user.
+    Strictly enforced by userId in token.
+    """
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+        
+    user_id = current_user.get("uid")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid user token")
+        
+    # security: get_orders strictly filters by user_id
+    orders = get_orders(user_id, limit=20) 
+    return {"orders": orders}
+
+
+@app.get("/orders/{order_id}")
+async def get_order_details(order_id: str, current_user: Optional[dict] = Depends(get_optional_user)):
+    """
+    Get specific order details.
+    Must belong to the authenticated user.
+    """
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+        
+    user_id = current_user.get("uid")
+    
+    # We don't have a get_order_by_id in firestore_service yet that checks ownership
+    # effectively, but we can implement a quick check using the existing get_db
+    
+    db = get_db()
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+        
+    doc_ref = db.collection("orders").document(order_id)
+    doc = doc_ref.get()
+    
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="Order not found")
+        
+    order_data = doc.to_dict()
+    
+    # STRICT SECURITY CHECK
+    if order_data.get("userId") != user_id:
+        # Do not throw 403, throw 404 to avoid leaking existence
+        raise HTTPException(status_code=404, detail="Order not found")
+        
+    # Format timestamps
+    if "orderedAt" in order_data and hasattr(order_data["orderedAt"], "isoformat"):
+        order_data["orderedAt"] = order_data["orderedAt"].isoformat()
+        
+    return order_data
+
+
 # ============ RUN SERVER ============
 
 if __name__ == "__main__":
@@ -548,4 +742,3 @@ if __name__ == "__main__":
         port=8000,
         reload=True
     )
-

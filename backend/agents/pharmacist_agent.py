@@ -46,11 +46,58 @@ Available actions:
 - check_refills: Check refill predictions
 
 ========================
+MESSY TEXT HANDLING (CRITICAL)
+========================
+Users often type informally. You MUST interpret their intent intelligently:
+
+**Common Typos & Misspellings:**
+- "paracetmol", "parcetamol", "paracetamoll" → Paracetamol
+- "ibuprofn", "ibuprofen", "advil" → Ibuprofen
+- "cetirzine", "cetirizne", "allergytab" → Cetirizine
+- "metformn", "metformine", "sugar medicine" → Metformin
+- Handle phonetic spelling: "asthma pump" → inhaler
+
+**Abbreviations & Shorthand:**
+- "para", "pcm", "crocin" → Paracetamol
+- "ctz", "cetriz" → Cetirizine
+- "amox", "amoxil" → Amoxicillin
+- "met", "glucophage" → Metformin
+- "tabs", "tab" → tablets
+- "caps" → capsules
+- "qty" → quantity
+- "pls", "plz" → please
+- "tmrw" → tomorrow
+- "asap" → as soon as possible
+
+**Informal Requests:**
+- "gimme 10 para" → Order 10 Paracetamol tablets
+- "need fever med" → Likely Paracetamol or Ibuprofen
+- "headache medicine" → Pain relief category
+- "want some cold tablets" → Cetirizine or similar
+- "sugar tablet" → Metformin (diabetes medicine)
+- "BP medicine" → Cardiovascular category (Amlodipine, Losartan, etc.)
+- "acidity tablet" → Omeprazole or Pantoprazole
+
+**Numbers & Quantities:**
+- "10", "ten", "10x" → quantity: 10
+- "half dozen" → 6
+- "dozen" → 12
+- "one strip" → typically 10 tablets
+- "2 weeks supply" → calculate based on dosage
+
+**Context Hints:**
+- If user mentions symptoms, suggest appropriate OTC medicines
+- "for my mom" / "for kids" → Note age-appropriate dosing
+- Always ASK for quantity if not specified, don't assume
+
+========================
 CONVERSATION MEMORY (CRITICAL)
 ========================
 - ALWAYS use the chat_history provided as context
 - NEVER ask for information already mentioned
 - If user says "yes", "confirm", "3 tablets" - they're referring to the MOST RECENT medicine
+- **NEW REQUEST PRIORITY**: If the user mentions a specific medicine name in the CURRENT message (e.g., "I want Paracetamol"), this indicates a NEW INTENT. IGNORE the previous medicine context (e.g., Metformin) and focus ONLY on the new medicine.
+- Do NOT hallucinate medicine names. Use exactly what the user typed.
 
 ========================
 PATIENT CONTEXT
@@ -113,7 +160,7 @@ STOCK RULES
 ========================
 - Never reveal exact stock quantities
 - When user asks "do you have X?" or "is X available?":
-  → If in stock: "Yes, [medicine] is available. How many would you like to order?"
+  → If in stock: "Yes, we have [medicine] in our store. How many would you like to order?"
   → If out of stock: "I'm sorry, [medicine] is currently out of stock."
 - Always ask for quantity after confirming availability
 
@@ -138,19 +185,17 @@ emit_decision:
 - next_agent: InventoryAgent | PolicyAgent | FulfillmentAgent | RefillPredictionAgent | null
 
 check_inventory:
-- medicine_name: Name of medicine
-- quantity: Number of units (0 if just checking)
-- dosage: Optional strength (e.g., "500mg")
-- form: Optional form (tablet, capsule, syrup)
+- items: List of objects { "medicine_name": str, "quantity": int, "dosage": str, "form": str }
+- OR single item keys (medicine_name, quantity, ...) for backward compatibility
 
 show_order_preview:
-- patient_id, patient_name, medicine_id, medicine_name, strength, quantity, prescription_required, unit_price
+- patient_id, patient_name, items: [{medicine_name, quantity, ...}]
 
 show_order_confirmation:
-- order_id, patient_id, patient_name, medicine_name, strength, quantity, unit_price, delivery_type
+- order_id, patient_id, patient_name, items: [{medicine_name, quantity, ...}], unit_price, delivery_type
 
 check_policy:
-- medicine_name, quantity
+- items: [{medicine_name, quantity}]
 
 check_refills:
 - patient_id
@@ -177,6 +222,20 @@ class PharmacistAgent:
         self.client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.sessions: Dict[str, List[Dict[str, str]]] = {}
 
+    def _load_conversation_from_firestore(self, session_id: str, conversation_id: str):
+        """
+        Load conversation history from Firestore and populate the session cache.
+        This enables the agent to remember previous messages including medicine names and quantities.
+        """
+        try:
+            from services.firestore_service import get_conversation_history
+            messages = get_conversation_history(conversation_id, limit=20)
+            if messages:
+                self.sessions[session_id] = messages
+                print(f"✅ Loaded {len(messages)} messages from Firestore into session {session_id}")
+        except Exception as e:
+            print(f"❌ Failed to load conversation from Firestore: {e}")
+
     @agent_trace("PharmacistAgent", "gpt-5.2")
     async def process_message(
         self, 
@@ -184,11 +243,15 @@ class PharmacistAgent:
         session_id: str = "default",
         patient_id: Optional[str] = None,
         patient_name: Optional[str] = None,
-        user_id: Optional[str] = None
+        user_id: Optional[str] = None,
+        conversation_id: Optional[str] = None
     ) -> AgentOutput:
         """Process user message and return structured output"""
         if session_id not in self.sessions:
             self.sessions[session_id] = []
+            # If session is empty but we have a conversation_id, load history from Firestore
+            if conversation_id:
+                self._load_conversation_from_firestore(session_id, conversation_id)
         
         chat_history = self.sessions[session_id]
         
@@ -334,29 +397,46 @@ class PharmacistAgent:
 
     def _check_inventory(self, params: dict) -> AgentOutput:
         """Request inventory check from InventoryAgent."""
-        medicine_name = params.get("medicine_name", "")
-        quantity = params.get("quantity", 0)
-        dosage = params.get("dosage", "")
-        form = params.get("form", "")
+        # Support multi-item 'items' list
+        items = params.get("items", [])
         
-        evidence = [f"medicine_name={medicine_name}"]
-        if quantity > 0:
-            evidence.append(f"quantity={quantity}")
-        if dosage:
-            evidence.append(f"dosage={dosage}")
-        if form:
-            evidence.append(f"form={form}")
+        # Backward compatibility for single item params
+        if not items and params.get("medicine_name"):
+            items.append({
+                "medicine_name": params.get("medicine_name"),
+                "quantity": params.get("quantity", 0),
+                "dosage": params.get("dosage", ""),
+                "form": params.get("form", "")
+            })
+            
+        evidence = []
+        med_names = []
         
-        # Build detailed reason (2 lines as required)
-        reason_line1 = f"User requested {medicine_name}. Initiating inventory verification."
-        reason_line2 = f"Routing to InventoryAgent to check stock availability and pricing."
+        for item in items:
+            med = item.get("medicine_name", "")
+            if med:
+                med_names.append(med)
+                # Serialize item data to JSON-string evidence
+                # This safely packages all fields without parsing issues in Orchestrator
+                item_json = json.dumps(item)
+                evidence.append(f"item_data={item_json}")
+        
+        # Add legacy format for the first item (optional, for safety)
+        if items:
+            evidence.append(f"medicine_name={items[0].get('medicine_name', '')}")
+            evidence.append(f"quantity={items[0].get('quantity', 0)}")
+        
+        meds_str = ", ".join(med_names)
+        
+        # Build detailed reason
+        reason = f"User requested {meds_str}. Routing to InventoryAgent to check stock for {len(items)} items."
         
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.NEEDS_INFO,
-            reason=f"{reason_line1} {reason_line2}",
+            reason=reason,
             evidence=evidence,
-            message=f"Let me check {medicine_name} for you...",
+            message=f"Let me check the availability for {meds_str}...",
             next_agent="InventoryAgent"
         )
 
@@ -392,7 +472,7 @@ class PharmacistAgent:
             evidence=[
                 f"medicine_name={medicine_name}",
                 f"qty={quantity}",
-                f"price=${unit_price * quantity:.2f}"
+                f"price=₹{unit_price * quantity:.2f}"
             ],
             message=f"Here's your order preview for {medicine_name}.",
             next_agent=None,
@@ -427,7 +507,7 @@ class PharmacistAgent:
         # Calculate amounts
         subtotal = unit_price * quantity
         tax = subtotal * 0.05
-        delivery_fee = 2.00 if delivery_type == "delivery" else 0.00
+        delivery_fee = 40.00 if delivery_type == "delivery" else 0.00
         total = subtotal + tax + delivery_fee
         
         delivery_estimate = "Tomorrow by 9:00 PM" if delivery_type == "delivery" else "Ready in 2 hours"
@@ -441,13 +521,13 @@ class PharmacistAgent:
 **Date:** {created_at.strftime("%Y-%m-%d %H:%M")}
 
 **Items:**
-• {medicine_name} {strength} x{quantity} @ ${unit_price:.2f} = ${subtotal:.2f}
+• {medicine_name} {strength} x{quantity} @ ₹{unit_price:.2f} = ₹{subtotal:.2f}
 
-**Subtotal:** ${subtotal:.2f}
-**Tax (5%):** ${tax:.2f}
-**Delivery:** ${delivery_fee:.2f}
+**Subtotal:** ₹{subtotal:.2f}
+**Tax (5%):** ₹{tax:.2f}
+**Delivery:** ₹{delivery_fee:.2f}
 ━━━━━━━━━━━━━━━━━━━━━━
-**Total:** ${total:.2f}
+**Total:** ₹{total:.2f}
 
 **Status:** CONFIRMED
 **Estimated Delivery:** {delivery_estimate}"""
@@ -461,7 +541,7 @@ class PharmacistAgent:
                 f"patient_id={patient_id}",
                 f"medicine={medicine_name}",
                 f"quantity={quantity}",
-                f"total=${total:.2f}"
+                f"total=₹{total:.2f}"
             ],
             message=summary,
             next_agent=None,

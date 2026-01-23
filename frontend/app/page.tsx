@@ -1,10 +1,10 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import { Send, Mic, MicOff, Loader2, Paperclip, CheckCircle, ExternalLink, Settings, ChevronRight, Clock, ChevronDown, User, Volume2, Pill, Upload, AlertCircle, X, Truck } from 'lucide-react';
 import PrescriptionUploadCard from '@/components/PrescriptionUploadCard';
 import { useAuth } from '@/lib/AuthContext';
-import { getOrCreateConversation, saveMessage, loadMessages, getLatestConversation, updateConversationEntities, getConversationEntities } from '@/lib/firestoreService';
+import { getConversationEntities, getOrCreateConversation, loadMessages, saveMessage, updateConversationEntities } from '@/lib/firestoreService';
+import { ChevronRight, Clock, Loader2, Mic, Paperclip, Send, Settings, Truck, User, Volume2, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 
 interface Patient {
     patient_id: string;
@@ -236,6 +236,7 @@ export default function ChatPage() {
                     session_id: `session-${selectedPatient.patient_id}`,
                     conversation_history: conversationHistory,
                     user_name: userName || undefined, // Pass user name for agent greeting
+                    conversation_id: conversationId || undefined, // Pass Firestore conversation ID for memory
                 }),
             });
 
@@ -455,7 +456,7 @@ export default function ChatPage() {
     const displayEntities = currentEntities?.entities?.[0] || null;
 
     return (
-        <div className="flex flex-1 h-full min-h-0">
+        <div className="flex flex-1 h-full min-h-0 overflow-hidden">
             {/* Left Panel - Patient Context */}
             <aside className="w-80 bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800 flex flex-col overflow-y-auto transition-colors duration-300">
                 {/* Patient Context Section */}
@@ -544,7 +545,7 @@ export default function ChatPage() {
             </aside>
 
             {/* Main Chat Area */}
-            <div className="flex-1 flex flex-col bg-gray-50 dark:bg-gray-950 transition-colors duration-300">
+            <div className="flex-1 flex flex-col min-h-0 bg-gray-50 dark:bg-gray-950 transition-colors duration-300">
                 {/* Chat Header */}
                 <div className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 px-6 py-4 transition-colors duration-300">
                     <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Conversational Log</h2>
@@ -556,11 +557,24 @@ export default function ChatPage() {
                 {/* Messages */}
                 <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
                     {messages.map((message) => (
-                        <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                            <div className={`max-w-md ${message.role === 'user' ? 'order-1' : ''}`}>
+                        <div key={message.id} className={`flex gap-2 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                            {/* AI Pharmacist Avatar - left side for assistant */}
+                            {message.role === 'assistant' && (
+                                <div className="flex-shrink-0 w-8 h-8 rounded-full overflow-hidden border-2 border-indigo-400 shadow-sm self-end">
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                        src="/ai-pharmacist-smile.jpg"
+                                        alt="AI Pharmacist"
+                                        className="w-full h-full object-cover"
+                                    />
+                                </div>
+                            )}
+                            
+                            {/* Message Content */}
+                            <div className={`max-w-md`}>
                                 {/* Message Bubble */}
-                                <div className={`px-4 py-3 rounded-2xl ${message.role === 'user'
-                                    ? 'bg-indigo-600 text-white rounded-br-md shadow-md'
+                                <div className={`px-4 py-2 rounded-2xl ${message.role === 'user'
+                                    ? 'bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-br-md shadow-md'
                                     : 'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-800 dark:text-gray-200 rounded-bl-md shadow-sm'
                                     }`}>
                                     <p className="text-sm leading-relaxed" dangerouslySetInnerHTML={{ __html: formatMarkdown(message.content) }} />
@@ -594,67 +608,72 @@ export default function ChatPage() {
                                     <div className="mt-3">
                                         <PrescriptionUploadCard
                                             medicineName={message.prescriptionUpload.medicine_name || 'This medicine'}
-                                            onUpload={async (file) => {
-                                                // PrescriptionUploadCard calls onUpload twice:
-                                                // 1. First call = file upload (just mark as uploaded in UI)
-                                                // 2. Second call = Continue with Order (call API)
-                                                const callKey = `${message.id}-${file.name}`;
-                                                if (prescriptionCalledRef.current.has(callKey)) {
-                                                    // This is the second call - actually call the API
-                                                    try {
-                                                        const res = await fetch('/api/prescription/upload', {
-                                                            method: 'POST',
-                                                            headers: {
-                                                                'Content-Type': 'application/json',
-                                                                ...(idToken ? { 'Authorization': `Bearer ${idToken}` } : {})
-                                                            },
-                                                            body: JSON.stringify({
-                                                                session_id: `session-${selectedPatient?.patient_id}`,
-                                                                medicine_id: message.prescriptionUpload.medicine_id || '',
-                                                                prescription_file: file.name,
-                                                            }),
-                                                        });
-                                                        const data = await res.json();
-                                                        if (data.success && data.order_preview) {
-                                                            // Mark prescription as verified - hides all PrescriptionUploadCards
-                                                            setPrescriptionVerified(true);
-                                                            // Add message with Order Preview Card
-                                                            const previewMsg: Message = {
-                                                                id: Date.now().toString(),
-                                                                role: 'assistant',
-                                                                content: data.message || 'Prescription verified! Your order is ready for confirmation.',
-                                                                timestamp: new Date(),
-                                                                orderPreview: data.order_preview,
-                                                            };
-                                                            setMessages(prev => [...prev, previewMsg]);
-
-                                                            // PERSIST this synthesized message to Firestore
-                                                            if (conversationId) {
-                                                                const metadata = {
-                                                                    orderPreview: data.order_preview,
-                                                                    // Default others to null to respect Firestore strictness
-                                                                    extractedEntities: null,
-                                                                    safetyResult: null,
-                                                                    order: null,
-                                                                    traceUrl: null,
-                                                                    aiAnnotation: null,
-                                                                    badges: null,
-                                                                    prescriptionUpload: null,
-                                                                };
-                                                                saveMessage(conversationId, {
-                                                                    sender: 'assistant',
-                                                                    text: previewMsg.content,
-                                                                    type: 'order_summary',
-                                                                    metadata: metadata
-                                                                }).catch(err => console.error('[Firestore] Failed to save preview message:', err));
-                                                            }
-                                                        }
-                                                    } catch (error) {
-                                                        console.error('Prescription upload failed:', error);
+                                            onUpload={async (file, base64) => {
+                                                // Send prescription to backend for AI validation
+                                                try {
+                                                    const res = await fetch('/api/prescription/upload', {
+                                                        method: 'POST',
+                                                        headers: {
+                                                            'Content-Type': 'application/json',
+                                                            ...(idToken ? { 'Authorization': `Bearer ${idToken}` } : {})
+                                                        },
+                                                        body: JSON.stringify({
+                                                            session_id: `session-${selectedPatient?.patient_id}`,
+                                                            medicine_id: message.prescriptionUpload.medicine_id || '',
+                                                            medicine_name: message.prescriptionUpload.medicine_name || '',
+                                                            prescription_file: base64,  // Send base64 image
+                                                        }),
+                                                    });
+                                                    const data = await res.json();
+                                                    
+                                                    if (!data.success) {
+                                                        // Validation failed - return error to card
+                                                        return {
+                                                            success: false,
+                                                            message: data.message || 'Invalid prescription'
+                                                        };
                                                     }
-                                                } else {
-                                                    // First call - just mark as called, don't call API
-                                                    prescriptionCalledRef.current.add(callKey);
+                                                    
+                                                    if (data.order_preview) {
+                                                        // Validation passed - show order preview
+                                                        setPrescriptionVerified(true);
+                                                        const previewMsg: Message = {
+                                                            id: Date.now().toString(),
+                                                            role: 'assistant',
+                                                            content: data.message || 'Prescription verified! Your order is ready for confirmation.',
+                                                            timestamp: new Date(),
+                                                            orderPreview: data.order_preview,
+                                                        };
+                                                        setMessages(prev => [...prev, previewMsg]);
+
+                                                        // Persist to Firestore
+                                                        if (conversationId) {
+                                                            const metadata = {
+                                                                orderPreview: data.order_preview,
+                                                                extractedEntities: null,
+                                                                safetyResult: null,
+                                                                order: null,
+                                                                traceUrl: null,
+                                                                aiAnnotation: null,
+                                                                badges: null,
+                                                                prescriptionUpload: null,
+                                                            };
+                                                            saveMessage(conversationId, {
+                                                                sender: 'assistant',
+                                                                text: previewMsg.content,
+                                                                type: 'order_summary',
+                                                                metadata: metadata
+                                                            }).catch(err => console.error('[Firestore] Failed to save preview message:', err));
+                                                        }
+                                                    }
+                                                    
+                                                    return { success: true };
+                                                } catch (error) {
+                                                    console.error('Prescription upload failed:', error);
+                                                    return {
+                                                        success: false,
+                                                        message: 'Failed to validate prescription. Please try again.'
+                                                    };
                                                 }
                                             }}
                                             onSkip={() => sendMessage('cancel')}
@@ -689,15 +708,27 @@ export default function ChatPage() {
 
                                                     return (
                                                         <div key={idx} className="flex items-start gap-3 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg mb-2">
-                                                            <div className="w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-900/50 flex items-center justify-center flex-shrink-0">
-                                                                <Pill className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                                                            <div className="w-12 h-12 rounded-lg overflow-hidden bg-white flex-shrink-0 shadow-sm border border-gray-200 dark:border-gray-600">
+                                                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                                                <img
+                                                                    src={(() => {
+                                                                        const form = (item.form || 'tablet').toLowerCase();
+                                                                        if (form.includes('capsule')) return '/medicines/capsule.png';
+                                                                        if (form.includes('inhaler')) return '/medicines/inhaler.png';
+                                                                        if (form.includes('pen') || form.includes('insulin')) return '/medicines/pen.png';
+                                                                        if (form.includes('softgel') || form.includes('gel')) return '/medicines/softgel.png';
+                                                                        return '/medicines/tablet.png';
+                                                                    })()}
+                                                                    alt={item.medicine_name}
+                                                                    className="w-full h-full object-cover"
+                                                                />
                                                             </div>
                                                             <div className="flex-1 min-w-0">
                                                                 <div className="flex items-center justify-between gap-2">
                                                                     <p className="font-medium text-gray-900 dark:text-gray-100 text-sm">{item.medicine_name}</p>
                                                                     {item.unit_price && (
                                                                         <p className="text-sm font-semibold text-gray-700 dark:text-gray-200 whitespace-nowrap">
-                                                                            ${itemTotal.toFixed(2)}
+                                                                            ₹{itemTotal.toFixed(2)}
                                                                         </p>
                                                                     )}
                                                                 </div>
@@ -716,7 +747,7 @@ export default function ChatPage() {
                                                 <div className="border-t border-gray-100 dark:border-gray-600 pt-3 mt-3">
                                                     <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400 mb-2">
                                                         <span>Price per unit</span>
-                                                        <span>${pricePerUnit.toFixed(2)}/unit</span>
+                                                        <span>₹{pricePerUnit.toFixed(2)}/unit</span>
                                                     </div>
                                                     <div className="flex justify-between items-baseline">
                                                         <div>
@@ -724,7 +755,7 @@ export default function ChatPage() {
                                                             <p className="text-[10px] text-gray-400 dark:text-gray-500">Inclusive of all taxes</p>
                                                         </div>
                                                         <span className="text-xl font-bold text-indigo-600 dark:text-indigo-400">
-                                                            ${total.toFixed(2)}
+                                                            ₹{total.toFixed(2)}
                                                         </span>
                                                     </div>
                                                 </div>
@@ -779,17 +810,52 @@ export default function ChatPage() {
                                     {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                 </p>
                             </div>
+                            
+                            {/* Customer Avatar - right side for user */}
+                            {message.role === 'user' && (
+                                <div className="flex-shrink-0 w-8 h-8 rounded-full overflow-hidden border-2 border-purple-400 shadow-sm self-end">
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                        src={(() => {
+                                            const name = (userName || 'Guest').split(' ')[0].toLowerCase();
+                                            if (['sh', 'h', 'n', 'k', 'r', 't', 'm', 'd', 's', 'o', 'v', 'l'].some(end => name.endsWith(end))) return '/customer-male.png';
+                                            if (['a', 'i', 'y', 'e'].some(end => name.endsWith(end))) return '/customer-female.png';
+                                            return '/customer-male.png';
+                                        })()}
+                                        alt="Customer"
+                                        className="w-full h-full object-cover"
+                                    />
+                                </div>
+                            )}
                         </div>
                     ))}
 
                     {isLoading && (
-                        <div className="flex items-center gap-2 text-gray-500">
-                            <div className="flex gap-1">
-                                <div className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                                <div className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                                <div className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                        <div className="flex items-start gap-3">
+                            {/* AI Pharmacist Avatar */}
+                            <div className="relative flex-shrink-0">
+                                <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-indigo-400 shadow-lg">
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                        src="/ai-pharmacist.jpg"
+                                        alt="AI Pharmacist thinking"
+                                        className="w-full h-full object-cover"
+                                    />
+                                </div>
+                                {/* Pulsing ring animation */}
+                                <div className="absolute inset-0 rounded-full border-2 border-indigo-400 animate-ping opacity-30"></div>
                             </div>
-                            <span className="text-sm">AI is thinking...</span>
+                            {/* Thinking bubble */}
+                            <div className="bg-white dark:bg-gray-800 px-4 py-3 rounded-2xl rounded-tl-md shadow-sm border border-gray-200 dark:border-gray-700">
+                                <div className="flex items-center gap-2">
+                                    <div className="flex gap-1">
+                                        <div className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                                        <div className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                                        <div className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                                    </div>
+                                    <span className="text-sm text-gray-500 dark:text-gray-400">AI is thinking...</span>
+                                </div>
+                            </div>
                         </div>
                     )}
 
@@ -891,14 +957,14 @@ export default function ChatPage() {
                 <div className="p-4 border-b border-gray-200 dark:border-gray-800">
                     <div className="flex items-center gap-2 mb-3">
                         <Settings className="w-4 h-4 text-gray-500" />
-                        <h3 className="text-sm font-semibold text-gray-900">Chat Settings</h3>
+                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Chat Settings</h3>
                     </div>
-                    <p className="text-xs text-gray-500 mb-4">Personalize your chat experience.</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">Personalize your chat experience.</p>
 
                     <div className="space-y-4">
                         {/* Auto-save chats toggle */}
                         <div className="flex items-center justify-between">
-                            <span className="text-sm text-gray-700">Auto-save chats</span>
+                            <span className="text-sm text-gray-700 dark:text-gray-300">Auto-save chats</span>
                             <button
                                 onClick={() => {
                                     const newState = !autoSaveChats;
@@ -919,7 +985,7 @@ export default function ChatPage() {
 
                         {/* Desktop Notifications toggle */}
                         <div className="flex items-center justify-between">
-                            <span className="text-sm text-gray-700">Desktop Notifications</span>
+                            <span className="text-sm text-gray-700 dark:text-gray-300">Desktop Notifications</span>
                             <button
                                 onClick={() => setDesktopNotifications(!desktopNotifications)}
                                 className={`w-10 h-6 rounded-full transition-colors ${desktopNotifications ? 'bg-indigo-600' : 'bg-gray-300'
@@ -931,7 +997,7 @@ export default function ChatPage() {
                         </div>
 
                         {/* Archive Conversation */}
-                        <button className="flex items-center gap-2 text-sm text-gray-700 hover:text-gray-900">
+                        <button className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white">
                             <ChevronRight className="w-4 h-4" />
                             Archive Conversation
                         </button>

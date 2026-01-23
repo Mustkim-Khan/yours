@@ -12,8 +12,9 @@ import { useAuth, UserRole } from '@/lib/AuthContext';
 // Admin: Refills + Admin Dashboard
 const navItems = [
     { href: '/', label: 'Conversational Chat', roles: ['customer'] },
+    { href: '/orders', label: 'My Orders', roles: ['customer'] },
     { href: '/admin', label: 'Admin Inventory Dashboard', roles: ['admin'] },
-    { href: '/refills', label: 'Proactive Refill Alerts', roles: ['admin'] },
+    { href: '/admin/refills', label: 'Proactive Refill Alerts', roles: ['admin'] },
 ];
 
 export default function Sidebar() {

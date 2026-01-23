@@ -1,11 +1,11 @@
 'use client';
 
-import { useState, useRef } from 'react';
-import { Upload, FileText, X, CheckCircle, AlertCircle } from 'lucide-react';
+import { AlertCircle, CheckCircle, FileText, Upload, X, XCircle } from 'lucide-react';
+import { useRef, useState } from 'react';
 
 interface PrescriptionUploadCardProps {
     medicineName: string;
-    onUpload: (file: File) => void;
+    onUpload: (file: File, base64: string) => Promise<{ success: boolean; message?: string }>;
     onSkip: () => void;
 }
 
@@ -13,12 +13,14 @@ export default function PrescriptionUploadCard({ medicineName, onUpload, onSkip 
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
     const [uploading, setUploading] = useState(false);
     const [uploaded, setUploaded] = useState(false);
+    const [validationError, setValidationError] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (file) {
             setSelectedFile(file);
+            setValidationError(null); // Clear previous error
         }
     };
 
@@ -27,6 +29,7 @@ export default function PrescriptionUploadCard({ medicineName, onUpload, onSkip 
         const file = event.dataTransfer.files[0];
         if (file && (file.type.startsWith('image/') || file.type === 'application/pdf')) {
             setSelectedFile(file);
+            setValidationError(null);
         }
     };
 
@@ -34,20 +37,46 @@ export default function PrescriptionUploadCard({ medicineName, onUpload, onSkip 
         event.preventDefault();
     };
 
+    // Convert file to base64
+    const fileToBase64 = (file: File): Promise<string> => {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = error => reject(error);
+        });
+    };
+
     const handleUpload = async () => {
         if (!selectedFile) return;
 
         setUploading(true);
-        // Simulate upload delay
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        setUploading(false);
-        setUploaded(true);
-        onUpload(selectedFile);
+        setValidationError(null);
+        
+        try {
+            // Convert to base64
+            const base64 = await fileToBase64(selectedFile);
+            
+            // Call parent handler with file and base64
+            const result = await onUpload(selectedFile, base64);
+            
+            if (result.success) {
+                setUploaded(true);
+            } else {
+                // Validation failed
+                setValidationError(result.message || 'Prescription validation failed');
+            }
+        } catch (error) {
+            setValidationError('Failed to process image. Please try again.');
+        } finally {
+            setUploading(false);
+        }
     };
 
     const handleRemoveFile = () => {
         setSelectedFile(null);
         setUploaded(false);
+        setValidationError(null);
         if (fileInputRef.current) {
             fileInputRef.current.value = '';
         }
@@ -104,12 +133,24 @@ export default function PrescriptionUploadCard({ medicineName, onUpload, onSkip 
                 </div>
             )}
 
-            {uploaded && (
+            {/* Validation Error Display */}
+            {validationError && (
+                <div className="bg-red-50 rounded-lg p-3 flex items-start gap-3">
+                    <XCircle className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                        <p className="text-sm font-medium text-red-700">Prescription Rejected</p>
+                        <p className="text-xs text-red-600 mt-1">{validationError}</p>
+                        <p className="text-xs text-gray-500 mt-2">Please upload a valid prescription with doctor's name, date, and medicine details.</p>
+                    </div>
+                </div>
+            )}
+
+            {uploaded && !validationError && (
                 <div className="bg-green-50 rounded-lg p-3 flex items-center gap-3">
                     <CheckCircle className="w-8 h-8 text-green-500" />
                     <div className="flex-1">
-                        <p className="text-sm font-medium text-green-700">Prescription Uploaded</p>
-                        <p className="text-xs text-green-600">Your prescription has been verified</p>
+                        <p className="text-sm font-medium text-green-700">Prescription Verified ✓</p>
+                        <p className="text-xs text-green-600">Your order is being processed</p>
                     </div>
                 </div>
             )}
@@ -141,14 +182,7 @@ export default function PrescriptionUploadCard({ medicineName, onUpload, onSkip 
                             Skip
                         </button>
                     </>
-                ) : (
-                    <button
-                        onClick={() => onUpload(selectedFile!)}
-                        className="flex-1 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition-colors"
-                    >
-                        Continue with Order
-                    </button>
-                )}
+                ) : null}
             </div>
         </div>
     );

@@ -100,7 +100,7 @@ async def verify_flow():
     res3 = await orchestrator.process_request(req3)
     print(f"🤖 Response: {res3.response_text}")
     
-    if "aspirin" in res3.response_text.lower():
+    if "paracetamol" in res3.response_text.lower():
         print("✅ Agent correctly recalled the order!")
     else:
         print("⚠️ Agent might not have recalled correctly. Check response.")

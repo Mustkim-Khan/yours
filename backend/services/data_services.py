@@ -1,120 +1,196 @@
 """
-Data Services - CSV Data Access Layer
-Provides access to medicine_master.csv and order_history.csv
+Data Services - Firestore Data Access Layer
+Provides access to Firestore 'medicines' and 'orders' collections.
+Replaces legacy CSV implementation.
 """
 
 import os
-import pandas as pd
+import firebase_admin
+from firebase_admin import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
 from models.schemas import Medicine, Patient
+from utils.auth import init_firebase
 
 
 class DataService:
     """
-    Data service for accessing pharmacy data from CSV files.
+    Data service for accessing pharmacy data from Firestore.
     """
     
-    def __init__(self, data_dir: str = None):
-        if data_dir is None:
-            data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
-        self.data_dir = data_dir
-        self._medicines_df = None
-        self._orders_df = None
-        self._load_data()
-    
-    def _load_data(self):
-        """Load CSV data files"""
+    def __init__(self):
+        # Ensure Firebase is initialized
+        if not firebase_admin._apps:
+            init_firebase()
+        
         try:
-            medicine_path = os.path.join(self.data_dir, "medicine_master.csv")
-            orders_path = os.path.join(self.data_dir, "order_history.csv")
-            
-            if os.path.exists(medicine_path):
-                self._medicines_df = pd.read_csv(medicine_path)
-            else:
-                self._medicines_df = pd.DataFrame()
-            
-            if os.path.exists(orders_path):
-                self._orders_df = pd.read_csv(orders_path)
-            else:
-                self._orders_df = pd.DataFrame()
-                
+            self.db = firestore.client()
+            print("✅ DataService connected to Firestore")
         except Exception as e:
-            print(f"Error loading data: {e}")
-            self._medicines_df = pd.DataFrame()
-            self._orders_df = pd.DataFrame()
+            print(f"❌ DataService failed to connect to Firestore: {e}")
+            self.db = None
     
     def search_medicine(self, query: str) -> List[Medicine]:
-        """Search medicines by name"""
-        if self._medicines_df.empty:
+        """Search medicines by name in Firestore"""
+        if not self.db:
             return []
         
-        query_lower = query.lower()
-        # Support both 'name' and 'medicine_name' columns
-        name_col = 'name' if 'name' in self._medicines_df.columns else 'medicine_name'
-        matches = self._medicines_df[
-            self._medicines_df[name_col].str.lower().str.contains(query_lower, na=False)
-        ]
-        
         medicines = []
-        for _, row in matches.iterrows():
-            try:
-                med = Medicine(
-                    medicine_id=str(row.get('medicine_id', '')),
-                    medicine_name=str(row.get('name', row.get('medicine_name', ''))),
-                    strength=str(row.get('strength', '')),
-                    form=str(row.get('form', 'Tablet')),
-                    stock_level=int(row.get('stock_level', 0)),
-                    prescription_required=self._parse_bool(row.get('prescription_required', False)),
-                    category=str(row.get('category', 'General')),
-                    discontinued=self._parse_bool(row.get('discontinued', False)),
-                    max_quantity_per_order=int(row.get('max_quantity_per_order', 30)),
-                    controlled_substance=self._parse_bool(row.get('controlled_substance', False))
-                )
-                medicines.append(med)
-            except Exception:
-                pass
-        
+        try:
+            # Firestore doesn't have native full-text search, so we do client-side filtering 
+            # for this MVP or simple prefix matching if possible.
+            # For scale, would use Algolia/Elasticsearch.
+            # Fetching all for now since dataset is small < 100 items.
+            docs = self.db.collection('medicines').stream()
+            
+            query_lower = query.lower()
+            
+            for doc in docs:
+                data = doc.to_dict()
+                name = data.get('medicine_name', '').lower()
+                med_id = data.get('medicine_id', '').lower()
+                
+                if query_lower in name or query_lower in med_id:
+                    medicines.append(self._map_firestore_to_medicine(data))
+                    
+        except Exception as e:
+            print(f"Error searching medicines: {e}")
+            
         return medicines
-    
-    def _parse_bool(self, value) -> bool:
-        """Parse boolean from string or bool"""
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.lower() in ('true', 'yes', '1')
-        return bool(value)
     
     def get_medicine_by_id(self, medicine_id: str) -> Optional[Medicine]:
         """Get medicine by ID"""
-        if self._medicines_df.empty:
+        if not self.db:
             return None
         
-        matches = self._medicines_df[self._medicines_df['medicine_id'] == medicine_id]
-        if matches.empty:
+        try:
+            doc_ref = self.db.collection('medicines').document(medicine_id)
+            doc = doc_ref.get()
+            
+            if doc.exists:
+                return self._map_firestore_to_medicine(doc.to_dict())
             return None
-        
-        row = matches.iloc[0]
+            
+        except Exception as e:
+            print(f"Error getting medicine {medicine_id}: {e}")
+            return None
+
+    def _map_firestore_to_medicine(self, data: Dict[str, Any]) -> Medicine:
+        """Helper to map Firestore dict to Pydantic model"""
         return Medicine(
-            medicine_id=str(row.get('medicine_id', '')),
-            medicine_name=str(row.get('name', row.get('medicine_name', ''))),
-            strength=str(row.get('strength', '')),
-            form=str(row.get('form', 'Tablet')),
-            stock_level=int(row.get('stock_level', 0)),
-            prescription_required=self._parse_bool(row.get('prescription_required', False)),
-            category=str(row.get('category', 'General')),
-            discontinued=self._parse_bool(row.get('discontinued', False)),
-            max_quantity_per_order=int(row.get('max_quantity_per_order', 30)),
-            controlled_substance=self._parse_bool(row.get('controlled_substance', False))
+            medicine_id=str(data.get('medicine_id', '')),
+            medicine_name=str(data.get('medicine_name', '')),
+            strength=str(data.get('strength', '')),
+            form=str(data.get('form', 'Tablet')),
+            stock_level=int(data.get('stock_level', 0)),
+            prescription_required=bool(data.get('prescription_required', False)),
+            category=str(data.get('category', 'General')),
+            discontinued=bool(data.get('discontinued', False)),
+            max_quantity_per_order=int(data.get('max_quantity_per_order', 30)),
+            controlled_substance=bool(data.get('controlled_substance', False))
         )
     
-    def get_patient_order_history(self, patient_id: str) -> pd.DataFrame:
-        """Get order history for a patient"""
-        if self._orders_df.empty:
-            return pd.DataFrame()
+    def get_patient_order_history(self, patient_id: str) -> List[Dict[str, Any]]:
+        """Get order history for a patient from Firestore"""
+        if not self.db:
+            return []
         
-        return self._orders_df[self._orders_df['patient_id'] == patient_id]
+        try:
+            # Query 'orders' collection where patient_id matches
+            # Note: We support 'userId' (auth uid) and 'patient_id' (legacy/business id)
+            # This searches by the explicit patient_id field first
+            orders_ref = self.db.collection('orders')
+            query = orders_ref.where(filter=FieldFilter("patient_id", "==", patient_id))
+            
+            docs = query.stream()
+            orders = []
+            
+            for doc in docs:
+                data = doc.to_dict()
+                # Convert timestamps
+                if 'orderedAt' in data and hasattr(data['orderedAt'], 'isoformat'):
+                    data['orderedAt'] = data['orderedAt'].isoformat()
+                orders.append(data)
+            
+            # Since we promised to return DataFrame-like list of dicts for now (or just list of dicts)
+            # The original return type hint said pd.DataFrame but code returned it for some callers.
+            # Converting to standard list of dicts is safer for API.
+            # Let's check usages. It was returning pd.DataFrame in legacy.
+            # We should probably return a DataFrame if we want minimal breakage, 
+            # OR update call sites. 
+            # Updating logic to return list, converting to DF at edge if needed by existing code.
+            # Looking at main.py:502: history = data_service.get_patient_order_history(patient_id)
+            # Then main.py:504: if history.empty: ...
+            # So main.py EXPECTS a DataFrame.
+            
+            import pandas as pd
+            if not orders:
+                return pd.DataFrame()
+            return pd.DataFrame(orders)
+            
+        except Exception as e:
+            print(f"Error fetching history: {e}")
+            import pandas as pd
+            return pd.DataFrame()
+
+    def has_valid_prescription(self, user_id: str, medicine_name: str, dosage: str) -> bool:
+        """
+        Check if user has a valid valid prescription for this specific medicine/dosage 
+        from a previous confirmed order.
+        
+        Criteria:
+        - Same User ID
+        - Medicine Name matches (case-insensitive)
+        - Dosage matches exactly
+        - Order was successfully confirmed (implies prescription was verified)
+        - Prescription was required for that order
+        """
+        if not self.db or not user_id:
+            return False
+            
+        try:
+            from services.firestore_service import get_orders
+            # reuse existing strict user-scoped query
+            orders = get_orders(user_id, limit=20) 
+            
+            target_med = medicine_name.lower().strip()
+            target_dosage = dosage.strip()
+            
+            for order in orders:
+                # 1. Check Status (Must be a completed/confirmed order)
+                status = order.get("status", "").upper()
+                if status not in ["CONFIRMED", "SHIPPED", "DELIVERED", "COMPLETED"]:
+                    continue
+                    
+                # 2. Check Medicine Name
+                order_med = order.get("medicine", "").lower().strip()
+                if not order_med or target_med not in order_med: 
+                    # use containment for safety (e.g. "Paracetamol" vs "Paracetamol 500mg")
+                    # But strict match is better if data is clean. Let's try containment for now to be robust.
+                    if order_med != target_med:
+                         continue
+
+                # 3. Check Dosage (Strict Match)
+                order_dosage = str(order.get("dosage", "")).strip()
+                if order_dosage != target_dosage:
+                    continue
+                    
+                # 4. Check if it WAS a prescription order
+                # If it didn't require prescription, it doesn't prove we have one.
+                if not order.get("prescriptionRequired", False):
+                    continue
+                    
+                # If satisfied, we found a valid historical prescription
+                print(f"✅ Found valid prescription from Order {order.get('orderId')}")
+                return True
+                
+            return False
+            
+        except Exception as e:
+            print(f"❌ Error checking prescription history: {e}")
+            return False
     
     def get_medicines_needing_refill(
         self, 
@@ -122,27 +198,45 @@ class DataService:
         current_date: datetime,
         days_ahead: int = 30
     ) -> List[Dict[str, Any]]:
-        """Get medicines that need refill soon"""
-        history = self.get_patient_order_history(patient_id)
+        """Get medicines that need refill soon based on history"""
+        # Reuse history fetch (returns DataFrame)
+        history_df = self.get_patient_order_history(patient_id)
         
-        if history.empty:
+        if history_df.empty:
             return []
         
         refills = []
         
-        # Group by medicine
-        for medicine in history['medicine_name'].unique():
-            med_history = history[history['medicine_name'] == medicine]
+        # Logic remains similar but operating on the DF we just built from Firestore data
+        if 'medicine' in history_df.columns:
+             med_col = 'medicine'
+        elif 'medicine_name' in history_df.columns:
+            med_col = 'medicine_name'
+        else:
+            return []
+
+        for medicine in history_df[med_col].unique():
+            med_history = history_df[history_df[med_col] == medicine]
             last_order = med_history.iloc[-1]
             
             try:
-                order_date = datetime.fromisoformat(str(last_order['order_date']))
+                # Firestore timestamp string or object handling
+                order_date_val = last_order.get('orderedAt', last_order.get('order_date'))
+                if isinstance(order_date_val, str):
+                    order_date = datetime.fromisoformat(order_date_val.replace('Z', '+00:00'))
+                elif isinstance(order_date_val, datetime):
+                    order_date = order_date_val
+                else:
+                    continue
             except:
                 continue
             
             quantity = int(last_order.get('quantity', 30))
             days_supply = quantity  # Assume 1 per day
             
+            if order_date.tzinfo:
+                order_date = order_date.replace(tzinfo=None) # Naive comparison for simplicity
+                
             refill_date = order_date + timedelta(days=days_supply)
             days_remaining = (refill_date - current_date).days
             
@@ -159,129 +253,157 @@ class DataService:
     
     def get_inventory_stats(self) -> Dict[str, Any]:
         """Get inventory statistics"""
-        if self._medicines_df.empty:
+        if not self.db:
+            return {}
+            
+        try:
+            # For large datasets, use aggregation queries. 
+            # For <1000 items, client side counting is fine.
+            docs = self.db.collection('medicines').stream()
+            
+            total = 0
+            out_of_stock = 0
+            low_stock = 0
+            prescription_required = 0
+            
+            for doc in docs:
+                data = doc.to_dict()
+                total += 1
+                stock = int(data.get('stock_level', 0))
+                
+                if stock == 0:
+                    out_of_stock += 1
+                elif stock <= 20:
+                    low_stock += 1
+                    
+                if data.get('prescription_required'):
+                    prescription_required += 1
+                    
             return {
-                "total_skus": 0, 
-                "unique_medicines": 0, 
-                "out_of_stock": 0, 
-                "low_stock": 0,
-                "prescription_required": 0,
-                "discontinued": 0
+                "total_skus": total,
+                "unique_medicines": total,
+                "out_of_stock": out_of_stock,
+                "low_stock": low_stock,
+                "prescription_required": prescription_required,
+                "discontinued": 0 # Not tracking yet
             }
-        
-        total = len(self._medicines_df)
-        out_of_stock = len(self._medicines_df[self._medicines_df['stock_level'] == 0])
-        low_stock = len(self._medicines_df[
-            (self._medicines_df['stock_level'] > 0) & 
-            (self._medicines_df['stock_level'] <= 20)
-        ])
-        
-        # Count prescription required
-        prescription_required = 0
-        if 'prescription_required' in self._medicines_df.columns:
-            prescription_required = len(self._medicines_df[
-                self._medicines_df['prescription_required'].apply(lambda x: str(x).lower() in ('true', 'yes', '1'))
-            ])
-        
-        return {
-            "total_skus": total,
-            "unique_medicines": total,
-            "out_of_stock": out_of_stock,
-            "low_stock": low_stock,
-            "prescription_required": prescription_required,
-            "discontinued": 0
-        }
+        except Exception as e:
+            print(f"Error getting stats: {e}")
+            return {}
     
     def get_all_medicines(self) -> List[Medicine]:
         """Get all medicines in inventory"""
-        if self._medicines_df.empty:
+        if not self.db:
             return []
-        
+            
         medicines = []
-        name_col = 'name' if 'name' in self._medicines_df.columns else 'medicine_name'
-        
-        for _, row in self._medicines_df.iterrows():
-            try:
-                med = Medicine(
-                    medicine_id=str(row.get('medicine_id', '')),
-                    medicine_name=str(row.get('name', row.get('medicine_name', ''))),
-                    strength=str(row.get('strength', '')),
-                    form=str(row.get('form', 'Tablet')),
-                    stock_level=int(row.get('stock_level', 0)),
-                    prescription_required=self._parse_bool(row.get('prescription_required', False)),
-                    category=str(row.get('category', 'General')),
-                    discontinued=self._parse_bool(row.get('discontinued', False)),
-                    max_quantity_per_order=int(row.get('max_quantity_per_order', 30)),
-                    controlled_substance=self._parse_bool(row.get('controlled_substance', False))
-                )
-                medicines.append(med)
-            except Exception:
-                pass
-        
+        try:
+            docs = self.db.collection('medicines').stream()
+            for doc in docs:
+                medicines.append(self._map_firestore_to_medicine(doc.to_dict()))
+        except Exception as e:
+            print(f"Error getting all medicines: {e}")
+            
         return medicines
     
     def decrease_stock(self, medicine_name: str, quantity: int) -> bool:
         """
-        Decrease stock level for a medicine when an order is placed.
-        Returns True if successful, False if insufficient stock.
+        Decrease stock level for a medicine.
+        Uses Firestore Transaction for atomicity.
         """
-        if self._medicines_df.empty:
+        if not self.db:
             return False
+            
+        transaction = self.db.transaction()
         
-        # Find the medicine by name (case-insensitive)
-        name_col = 'name' if 'name' in self._medicines_df.columns else 'medicine_name'
-        mask = self._medicines_df[name_col].str.lower() == medicine_name.lower()
-        
-        if not mask.any():
-            # Try partial match
-            mask = self._medicines_df[name_col].str.lower().str.contains(medicine_name.lower(), na=False)
-        
-        if not mask.any():
-            print(f"Medicine not found: {medicine_name}")
-            return False
-        
-        # Get current stock
-        idx = self._medicines_df[mask].index[0]
-        current_stock = self._medicines_df.loc[idx, 'stock_level']
-        
-        if current_stock < quantity:
-            print(f"Insufficient stock for {medicine_name}: {current_stock} < {quantity}")
-            return False
-        
-        # Decrease stock
-        new_stock = current_stock - quantity
-        self._medicines_df.loc[idx, 'stock_level'] = new_stock
-        
-        # Save to CSV
         try:
-            medicine_path = os.path.join(self.data_dir, "medicine_master.csv")
-            self._medicines_df.to_csv(medicine_path, index=False)
-            print(f"Stock updated: {medicine_name} {current_stock} -> {new_stock}")
+            # 1. Find the document ID by name
+            # Ideally we should pass ID, but legacy code passes name.
+            # We search for it.
+            medicines_ref = self.db.collection('medicines')
+            query = medicines_ref.where(filter=FieldFilter("medicine_name", "==", medicine_name)).limit(1)
+            docs = list(query.stream())
+            
+            if not docs:
+                # Try case insensitive match if precise match failed? 
+                # Firestore doesn't support case-insensitive query easily. 
+                # Fail for now to enforce exact names, or fetch all (expensive).
+                print(f"Medicine not found for stock update: {medicine_name}")
+                return False
+                
+            doc_ref = docs[0].reference
+            
+            @firestore.transactional
+            def update_in_transaction(transaction, doc_ref):
+                snapshot = doc_ref.get(transaction=transaction)
+                current_stock = snapshot.get('stock_level')
+                
+                if current_stock < quantity:
+                    raise ValueError(f"Insufficient stock: {current_stock} < {quantity}")
+                
+                transaction.update(doc_ref, {
+                    'stock_level': current_stock - quantity,
+                    'last_updated': firestore.SERVER_TIMESTAMP
+                })
+                return True
+
+            update_in_transaction(transaction, doc_ref)
+            print(f"✅ Stock updated for {medicine_name}")
             return True
+            
         except Exception as e:
-            print(f"Error saving stock update: {e}")
+            print(f"❌ Failed to update stock: {e}")
             return False
     
     def get_all_patients(self) -> List[Patient]:
-        """Get all unique patients from order history"""
-        if self._orders_df.empty:
+        """Get all unique patients from orders"""
+        if not self.db:
             return []
-        
-        patients = []
-        seen = set()
-        
-        for _, row in self._orders_df.iterrows():
-            pid = str(row.get('patient_id', ''))
-            if pid and pid not in seen:
-                seen.add(pid)
-                patients.append(Patient(
-                    patient_id=pid,
-                    patient_name=str(row.get('patient_name', f'Patient {pid}')),
-                    patient_email=str(row.get('patient_email', f'{pid}@example.com')),
-                    patient_phone=str(row.get('patient_phone', '000-000-0000'))
-                ))
-        
-        return patients
+            
+        try:
+            # Aggregation manually
+            docs = self.db.collection('orders').stream()
+            patients_map = {}
+            
+            for doc in docs:
+                data = doc.to_dict()
+                pid = str(data.get('patient_id', ''))
+                if pid and pid not in patients_map:
+                    patients_map[pid] = Patient(
+                        patient_id=pid,
+                        patient_name=str(data.get('patient_name', f'Patient {pid}')),
+                        patient_email=str(data.get('patient_email', '')),
+                        patient_phone=str(data.get('patient_phone', ''))
+                    )
+            return list(patients_map.values())
+            
+        except Exception as e:
+            print(f"Error getting patients: {e}")
+            return []
+
+    def get_user_contact(self, user_id: str) -> Dict[str, Optional[str]]:
+        """
+        Get user contact details (phone, name) from Firestore users collection.
+        Used for notifications.
+        """
+        if not self.db or not user_id:
+            return {"name": None, "phone": None}
+            
+        try:
+            doc_ref = self.db.collection('users').document(user_id)
+            doc = doc_ref.get()
+            
+            if doc.exists:
+                data = doc.to_dict()
+                return {
+                    "name": data.get("name"),
+                    "phone": data.get("phone")
+                }
+            return {"name": None, "phone": None}
+            
+        except Exception as e:
+            print(f"Error getting user contact for {user_id}: {e}")
+            return {"name": None, "phone": None}
 
 
 # Global instance

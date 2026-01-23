@@ -82,7 +82,7 @@ class PolicyAgent:
                 ],
                 # temperature=0.1,  # Removed to avoid "unsupported value" error with reasoning models
                 # max_tokens=200 # Removed to avoid "unsupported_parameter" error with reasoning models
-                max_completion_tokens=50
+                # max_completion_tokens=50
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
@@ -282,6 +282,78 @@ class PolicyAgent:
             message=None,
             next_agent="FulfillmentAgent"
         )
+
+    @agent_trace("PolicyAgent", "gpt-5.2")
+    async def validate_prescription(
+        self, 
+        image_base64: str, 
+        medicine_name: str
+    ) -> AgentOutput:
+        """
+        Validate a prescription image using AI vision.
+        Checks for doctor's name, date, medicine, and other validity criteria.
+        
+        Args:
+            image_base64: Base64 encoded prescription image
+            medicine_name: Expected medicine name to verify
+            
+        Returns:
+            AgentOutput with APPROVED if valid, REJECTED if invalid
+        """
+        from services.prescription_validator import validate_prescription_image
+        
+        # Validate using GPT-4 Vision
+        result = await validate_prescription_image(image_base64, medicine_name)
+        
+        if result["is_valid"]:
+            # Build evidence from validation
+            evidence = [
+                f"prescription_valid=True",
+                f"doctor_name={result.get('doctor_name', 'Verified')}",
+                f"date={result.get('date', 'Present')}",
+                f"confidence={result.get('confidence', 0.8):.2f}"
+            ]
+            
+            if result.get("medicines"):
+                evidence.append(f"medicines_found={','.join(result['medicines'])}")
+            
+            # Generate reasoning
+            context = f"Prescription validated: Dr. {result.get('doctor_name', 'Unknown')}, dated {result.get('date', 'N/A')}"
+            reason = await self._generate_reasoning(context, "APPROVED")
+            
+            return AgentOutput(
+                agent=self.agent_name,
+                decision=Decision.APPROVED,
+                reason=reason,
+                evidence=evidence,
+                message=f"✅ Prescription verified! Doctor: {result.get('doctor_name', 'Verified')}, Date: {result.get('date', 'Valid')}",
+                next_agent="FulfillmentAgent"
+            )
+        else:
+            # Prescription invalid
+            rejection_reason = result.get("rejection_reason", "Invalid prescription image")
+            
+            evidence = [
+                f"prescription_valid=False",
+                f"rejection_reason={rejection_reason}",
+                f"confidence={result.get('confidence', 0.0):.2f}"
+            ]
+            
+            if result.get("is_expired"):
+                evidence.append("prescription_expired=True")
+            
+            # Generate reasoning
+            context = f"Prescription rejected: {rejection_reason}"
+            reason = await self._generate_reasoning(context, "REJECTED")
+            
+            return AgentOutput(
+                agent=self.agent_name,
+                decision=Decision.REJECTED,
+                reason=reason,
+                evidence=evidence,
+                message=f"❌ {rejection_reason}",
+                next_agent=None
+            )
 
     def get_trace_id(self) -> Optional[str]:
         return get_trace_id()

@@ -6,6 +6,7 @@ Uses: gpt-5-mini (fast for inventory lookups)
 """
 
 import os
+import json
 from typing import Optional, Dict, Any, List
 
 from openai import AsyncOpenAI
@@ -65,7 +66,7 @@ class InventoryAgent:
                 ],
                 # temperature=0.1,  # Removed to avoid "unsupported value" error
                 # max_tokens=200 # Removed to avoid "unsupported_parameter" error
-                max_completion_tokens=50  # Limit output for speed
+                # max_completion_tokens=50
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
@@ -76,12 +77,13 @@ class InventoryAgent:
     @agent_trace("InventoryAgent", "gpt-5-mini")
     async def check_stock(
         self, 
-        medicine_name: str, 
+        medicine_name: str = "", 
         form: Optional[str] = None,
-        dosage: Optional[str] = None
+        dosage: Optional[str] = None,
+        items: Optional[List[Dict[str, Any]]] = None
     ) -> AgentOutput:
         """
-        Check stock availability for a medicine.
+        Check stock availability for a medicine or list of medicines.
         Returns standardized AgentOutput.
         """
         if not self._data_service:
@@ -94,91 +96,134 @@ class InventoryAgent:
                 next_agent=None
             )
         
-        # Search for medicine
-        medicines = self._data_service.search_medicine(medicine_name)
-        
-        if not medicines:
-            return AgentOutput(
+        # Normalize input to list of items
+        check_items = []
+        if items:
+            check_items = items
+        elif medicine_name:
+            check_items = [{"medicine_name": medicine_name, "form": form, "dosage": dosage}]
+            
+        if not check_items:
+             return AgentOutput(
                 agent=self.agent_name,
                 decision=Decision.REJECTED,
-                reason=f"Medicine '{medicine_name}' not found in inventory",
-                evidence=[f"search_query={medicine_name}", "matches=0"],
-                message=None,
+                reason="No medicines provided for stock check",
+                evidence=[],
+                message="I couldn't identify which medicine you'd like to check.",
                 next_agent=None
             )
+
+        results = []
+        all_in_stock = True
+        any_discontinued = False
+        discontinued_names = []
+        out_of_stock_names = []
         
-        # Get best match
-        match = medicines[0]
-        for med in medicines:
-            if form and med.form.lower() == form.lower():
-                match = med
-                break
-            if dosage and med.strength.lower() == dosage.lower():
-                match = med
+        evidence = []
         
-        # Check stock status
-        if match.discontinued:
-            context = f"{match.medicine_name} is discontinued. Cannot be fulfilled."
+        for item in check_items:
+            med_name = item.get("medicine_name", "")
+            item_form = item.get("form")
+            item_dosage = item.get("dosage")
+            
+            # Search for medicine
+            medicines = self._data_service.search_medicine(med_name)
+            
+            if not medicines:
+                out_of_stock_names.append(med_name)
+                all_in_stock = False
+                continue
+            
+            # Get best match
+            match = medicines[0]
+            for med in medicines:
+                if item_form and med.form.lower() == item_form.lower():
+                    match = med
+                    break
+                if item_dosage and med.strength.lower() == item_dosage.lower():
+                    match = med
+            
+            # Check stock status
+            if match.discontinued:
+                any_discontinued = True
+                discontinued_names.append(match.medicine_name)
+                all_in_stock = False
+            elif match.stock_level == 0:
+                out_of_stock_names.append(match.medicine_name)
+                all_in_stock = False
+            
+            # Add to evidence if successful or failed
+            stock_status = "out_of_stock" if match.stock_level == 0 else "in_stock"
+            if match.discontinued: stock_status = "discontinued"
+            
+            # Append item-specific evidence for Orchestrator to parse later
+            item_evidence = {
+                "medicine_id": match.medicine_id,
+                "medicine_name": match.medicine_name,
+                "strength": match.strength,
+                "form": match.form,
+                "stock_status": stock_status,
+                "prescription_required": match.prescription_required,
+                "max_quantity": match.max_quantity_per_order
+            }
+            evidence.append(f"item_data={json.dumps(item_evidence)}")
+            
+            # Also add legacy evidence for first item
+            if not results:
+                evidence.append(f"medicine_id={match.medicine_id}")
+                evidence.append(f"medicine_name={match.medicine_name}")
+                evidence.append(f"strength={match.strength}")
+                evidence.append(f"form={match.form}")
+                evidence.append(f"stock_status={stock_status}")
+                evidence.append(f"prescription_required={match.prescription_required}")
+            
+            results.append(match)
+
+        # Decision Logic
+        if any_discontinued:
+            names = ", ".join(discontinued_names)
+            context = f"{names} checked. Discontinued. Cannot fulfill."
             reason = await self._generate_reasoning(context, "REJECTED")
             return AgentOutput(
                 agent=self.agent_name,
                 decision=Decision.REJECTED,
                 reason=reason,
-                evidence=[
-                    f"medicine_id={match.medicine_id}",
-                    f"medicine_name={match.medicine_name}",
-                    f"discontinued=True"
-                ],
-                message=None,
+                evidence=evidence,
+                message=f"I'm sorry, but {names} has been discontinued.",
                 next_agent=None
             )
-        
-        if match.stock_level == 0:
-            context = f"{match.medicine_name} is out of stock (level 0). Cannot fulfill."
+            
+        if not all_in_stock:
+            names = ", ".join(out_of_stock_names)
+            context = f"{names} out of stock. Cannot fulfill complete order."
             reason = await self._generate_reasoning(context, "REJECTED")
             return AgentOutput(
                 agent=self.agent_name,
                 decision=Decision.REJECTED,
                 reason=reason,
-                evidence=[
-                    f"medicine_id={match.medicine_id}",
-                    f"medicine_name={match.medicine_name}",
-                    f"stock_status=out_of_stock"
-                ],
-                message=None,
+                evidence=evidence,
+                message=f"I'm sorry, but {names} is currently out of stock.",
                 next_agent=None
             )
-        
-        # In stock
-        stock_status = "low_stock" if match.stock_level <= 20 else "in_stock"
-        
-        # Build detailed reason (2 lines as required)
-        reason_line1 = f"{match.medicine_name} {match.strength} is available ({stock_status})."
-        reason_line2 = f"Stock verified. Routing to PolicyAgent for compliance check."
-        context = f"{reason_line1} {reason_line2}"
+            
+        # All items valid
+        med_names = ", ".join([m.medicine_name for m in results])
+        context = f"Stock verified for {len(results)} items: {med_names}. All available."
         reason = await self._generate_reasoning(context, "APPROVED")
         
-        # Generate dynamic message using LLM
+        # Generate dynamic message
         llm_message = await self._generate_message(
-            context=f"Medicine: {match.medicine_name} {match.strength}, Status: {stock_status}",
-            task="Confirm medicine availability professionally"
+            context=f"Medicines: {med_names}, Status: All In Stock",
+            task="Confirm availability for multi-item order"
         )
         
         return AgentOutput(
             agent=self.agent_name,
             decision=Decision.APPROVED,
             reason=reason,
-            evidence=[
-                f"medicine_id={match.medicine_id}",
-                f"medicine_name={match.medicine_name}",
-                f"strength={match.strength}",
-                f"form={match.form}",
-                f"stock_status={stock_status}",
-                f"prescription_required={match.prescription_required}",
-                f"max_quantity={match.max_quantity_per_order}"
-            ],
+            evidence=evidence,
             message=llm_message,
-            next_agent="PolicyAgent"  # ALWAYS route to PolicyAgent
+            next_agent="PolicyAgent"
         )
 
     @agent_trace("InventoryAgent", "gpt-5-mini")

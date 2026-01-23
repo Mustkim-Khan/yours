@@ -70,7 +70,7 @@ class FulfillmentAgent:
                 ],
                 # temperature=0.1,  
                 # max_tokens=200
-                max_completion_tokens=50
+                # max_completion_tokens=50
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
@@ -143,13 +143,13 @@ class FulfillmentAgent:
         
         # Build detailed reason (2 lines as required)
         reason_line1 = f"Order {order_id} created successfully for {len(items)} item(s)."
-        reason_line2 = f"Total: ${total_amount:.2f}. {delivery_estimate}. Warehouse notified."
+        reason_line2 = f"Total: ₹{total_amount:.2f}. {delivery_estimate}. Warehouse notified."
         context = f"{reason_line1} {reason_line2}"
         reason = await self._generate_reasoning(context, "APPROVED")
         
         # Generate dynamic confirmation message using LLM
         llm_message = await self._generate_message(
-            context=f"Order {order_id} for {', '.join(item_names)}, Total: ${total_amount:.2f}, Delivery: {delivery_estimate}",
+            context=f"Order {order_id} for {', '.join(item_names)}, Total: ₹{total_amount:.2f}, Delivery: {delivery_estimate}",
             task="Generate a friendly order confirmation message"
         )
         
@@ -161,7 +161,7 @@ class FulfillmentAgent:
                 f"order_id={order_id}",
                 f"patient_id={patient_id}",
                 f"items_count={len(items)}",
-                f"total_amount=${total_amount:.2f}",
+                f"total_amount=₹{total_amount:.2f}",
                 f"status=CONFIRMED",
                 f"delivery_type={delivery_type}",
                 f"delivery_estimate={delivery_estimate}",
@@ -294,7 +294,7 @@ class FulfillmentAgent:
         
         receipt_id = f"RCP-{uuid.uuid4().hex[:8].upper()}"
         
-        context = f"Receipt {receipt_id} generated for order {order_id}. Amount: ${order['total_amount']:.2f}."
+        context = f"Receipt {receipt_id} generated for order {order_id}. Amount: ₹{order['total_amount']:.2f}."
         reason = await self._generate_reasoning(context, "APPROVED")
         
         return AgentOutput(
@@ -304,7 +304,7 @@ class FulfillmentAgent:
             evidence=[
                 f"order_id={order_id}",
                 f"receipt_id={receipt_id}",
-                f"total_amount=${order['total_amount']:.2f}",
+                f"total_amount=₹{order['total_amount']:.2f}",
                 f"items_count={len(order['items'])}"
             ],
             message=None,
@@ -316,7 +316,8 @@ class FulfillmentAgent:
         self,
         preview_data: OrderPreviewData,
         patient_name: str,
-        user_id: Optional[str] = None
+        user_id: Optional[str] = None,
+        patient_phone: Optional[str] = None
     ) -> tuple[AgentOutput, OrderConfirmationData, str]:
         """
         Confirm an order from preview data.
@@ -339,20 +340,19 @@ class FulfillmentAgent:
                 ""
             )
         
-        item = preview_data.items[0]
-        
         # Generate order ID
         order_id = f"ORD-{uuid.uuid4().hex[:8].upper()}"
         
-        # Calculate totals
-        subtotal = item.unit_price * item.quantity
+        # Calculate totals for ALL items
+        subtotal = sum(item.unit_price * item.quantity for item in preview_data.items)
         tax = subtotal * 0.05
-        delivery_fee = 2.00
+        delivery_fee = 40.00
         total = subtotal + tax + delivery_fee
         
-        # Decrease stock in inventory
+        # Decrease stock in inventory for ALL items
         if self._data_service:
-            self._data_service.decrease_stock(item.medicine_name, item.quantity)
+            for item in preview_data.items:
+                self._data_service.decrease_stock(item.medicine_name, item.quantity)
         
         # Build order confirmation data
         order_confirmation = OrderConfirmationData(
@@ -369,21 +369,26 @@ class FulfillmentAgent:
             estimated_delivery="Tomorrow by 9:00 PM"
         )
         
-        # Build detailed summary message
+        # Build detailed summary message for ALL items
+        items_text = "\n".join([
+            f"• {item.medicine_name} {item.strength} x{item.quantity} @ ₹{item.unit_price:.2f} = ₹{item.unit_price * item.quantity:.2f}"
+            for item in preview_data.items
+        ])
+        
         summary = f"""📋 **Order Summary**
 ━━━━━━━━━━━━━━━━━━━━━━
 **Order ID:** {order_id}
 **Patient:** {patient_name}
 **Date:** {datetime.now().strftime("%Y-%m-%d %H:%M")}
 
-**Items:**
-• {item.medicine_name} {item.strength} x{item.quantity} @ ${item.unit_price:.2f} = ${subtotal:.2f}
+**Items ({len(preview_data.items)}):**
+{items_text}
 
-**Subtotal:** ${subtotal:.2f}
-**Tax (5%):** ${tax:.2f}
-**Delivery:** ${delivery_fee:.2f}
+**Subtotal:** ₹{subtotal:.2f}
+**Tax (5%):** ₹{tax:.2f}
+**Delivery:** ₹{delivery_fee:.2f}
 ━━━━━━━━━━━━━━━━━━━━━━
-**Total:** ${total:.2f}
+**Total:** ₹{total:.2f}
 
 **Status:** CONFIRMED
 **Estimated Delivery:** Tomorrow by 9:00 PM"""
@@ -403,7 +408,7 @@ class FulfillmentAgent:
             "delivery_estimate": "Tomorrow by 9:00 PM"
         }
         
-        context = f"Order {order_id} confirmed. Total: ${total:.2f}. Delivery: Tomorrow."
+        context = f"Order {order_id} confirmed. Total: ₹{total:.2f}. Delivery: Tomorrow."
         reason = await self._generate_reasoning(context, "APPROVED")
         
         agent_output = AgentOutput(
@@ -414,9 +419,9 @@ class FulfillmentAgent:
                 f"order_id={order_id}",
                 f"patient_id={preview_data.patient_id}",
                 f"patient_name={patient_name}",
-                f"medicine={item.medicine_name}",
-                f"quantity={item.quantity}",
-                f"total=${total:.2f}",
+                f"items_count={len(preview_data.items)}",
+                f"medicines={', '.join(item.medicine_name for item in preview_data.items)}",
+                f"total=₹{total:.2f}",
                 f"status=CONFIRMED"
             ],
             message=summary,
@@ -429,6 +434,7 @@ class FulfillmentAgent:
                 from services.firestore_service import save_order
                 save_order(user_id, {
                     "order_id": order_id,
+                    "patient_id": preview_data.patient_id,  # ADDED: Required for history queries
                     "items": [item.model_dump() for item in preview_data.items],
                     "total_amount": total,
                     "status": "CONFIRMED",
@@ -436,6 +442,22 @@ class FulfillmentAgent:
                 })
             except Exception as e:
                 print(f"Failed to persist order: {e}")
+                
+        # Trigger WhatsApp Notification (Non-blocking)
+        if patient_phone:
+            try:
+                from services.whatsapp_service import send_order_confirmation_whatsapp
+                # Use the order confirmation object as snapshot - preserve item order
+                order_snapshot = {
+                    "order_id": order_id,
+                    "items": [item.model_dump() for item in preview_data.items],
+                    "total_amount": total,
+                    "delivery_estimate": order_confirmation.estimated_delivery
+                }
+                print(f"📲 Triggering WhatsApp for {patient_phone}")
+                send_order_confirmation_whatsapp(patient_phone, patient_name, order_snapshot)
+            except Exception as e:
+                print(f"⚠️ WhatsApp notification failed (non-blocking): {e}")
         
         return agent_output, order_confirmation, summary
 

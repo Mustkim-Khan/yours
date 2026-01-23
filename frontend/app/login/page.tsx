@@ -21,6 +21,7 @@ type AuthMode = 'signin' | 'signup';
 export default function LoginPage() {
     const [mode, setMode] = useState<AuthMode>('signin');
     const [name, setName] = useState('');
+    const [phone, setPhone] = useState('');
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
@@ -65,7 +66,19 @@ export default function LoginPage() {
                     setLoading(false);
                     return;
                 }
-                await signUp(email, password, name.trim());
+                if (!phone.trim() || phone.length < 10) {
+                    setError('Please enter a valid phone number');
+                    setLoading(false);
+                    return;
+                }
+
+                // Format phone to E.164 if missing country code
+                // Minimal frontend validation as requested
+                let formattedPhone = phone.trim();
+                // Simple assumption for MVP: if no +, add +91 (or let it be if user typed it)
+                // Ideally use libphonenumber, but strict instruction is "UI validation only"
+
+                await signUp(email, password, name.trim(), formattedPhone);
                 // New users always get 'customer' role, redirect to chat
                 router.push('/');
             } else {
@@ -168,6 +181,25 @@ export default function LoginPage() {
                                     required
                                     autoComplete="name"
                                     placeholder="John Doe"
+                                    className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition shadow-sm"
+                                />
+                            </div>
+                        )}
+
+                        {/* Phone Number (Sign Up only) */}
+                        {mode === 'signup' && (
+                            <div>
+                                <label htmlFor="phone" className="block text-sm font-medium text-slate-700 mb-2">
+                                    Phone Number
+                                </label>
+                                <input
+                                    id="phone"
+                                    type="tel"
+                                    value={phone}
+                                    onChange={(e) => setPhone(e.target.value)}
+                                    required
+                                    autoComplete="tel"
+                                    placeholder="+919876543210"
                                     className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition shadow-sm"
                                 />
                             </div>

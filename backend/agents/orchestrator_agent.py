@@ -5,6 +5,7 @@ All agents emit standardized output: {agent, decision, reason, evidence, message
 """
 
 import os
+import json
 from typing import Optional, Dict, Any, List
 
 from langchain_openai import ChatOpenAI
@@ -43,8 +44,8 @@ class OrchestratorAgent:
     {agent, decision, reason, evidence, message, next_agent}
     
     Model assignments:
-    - PharmacistAgent: gpt-5-mini
-    - InventoryAgent: gpt-5.2 (precision)
+    - PharmacistAgent: gpt-5.2
+    - InventoryAgent: gpt-5-mini
     - PolicyAgent: gpt-5.2 (precision)
     - FulfillmentAgent: gpt-5-mini
     - RefillPredictionAgent: gpt-5-mini
@@ -54,11 +55,11 @@ class OrchestratorAgent:
         self.agent_name = "OrchestratorAgent"
         
         # Initialize all sub-agents
-        self.pharmacist = PharmacistAgent()       # gpt-5-mini
-        self.inventory = InventoryAgent()          # gpt-5.2
-        self.policy = PolicyAgent()                # gpt-5.2
-        self.fulfillment = FulfillmentAgent()      # gpt-5-mini
-        self.refill = RefillPredictionAgent()      # gpt-5-mini
+        self.pharmacist = PharmacistAgent()       
+        self.inventory = InventoryAgent()        
+        self.policy = PolicyAgent()          
+        self.fulfillment = FulfillmentAgent()     
+        self.refill = RefillPredictionAgent()     
         
         self._data_service = None
         
@@ -175,11 +176,23 @@ class OrchestratorAgent:
                 # Clear the preview
                 self._clear_order_preview(request.session_id)
                 
+                # Get phone number from user profile if available
+                patient_phone = None
+                patient_name = request.user_name
+                
+                if self._data_service and request.user_id:
+                    contact = self._data_service.get_user_contact(request.user_id)
+                    patient_phone = contact.get("phone")
+                    # Prefer Firestore name if available
+                    if contact.get("name"):
+                        patient_name = contact.get("name")
+                
                 # Delegate to FulfillmentAgent to confirm order
                 agent_output, order_confirmation_data, summary = await self.fulfillment.confirm_order(
                     saved_preview,
-                    saved_preview.patient_name,
-                    request.user_id  # Pass user_id for persistence
+                    patient_name or saved_preview.patient_name,
+                    request.user_id,
+                    patient_phone  # NEW: Pass phone for WhatsApp
                 )
                 
                 if order_confirmation_data:
@@ -208,7 +221,8 @@ class OrchestratorAgent:
             request.session_id,
             request.patient_id,
             request.user_name,  # Pass user_name from Firestore
-            request.user_id     # Pass user_id for persistence
+            request.user_id,    # Pass user_id for persistence
+            request.conversation_id  # Pass Firestore conversation ID for history
         )
         
         agent_chain.append("PharmacistAgent")
@@ -235,33 +249,89 @@ class OrchestratorAgent:
                 agent_chain.append("PolicyAgent")
                 if current_output.decision == Decision.NEEDS_INFO:
                     requires_prescription = True
-                    # Extract order details for pending prescription
+                    # Extract order details
                     order_info = self._extract_order_info(all_evidence)
-                    # Save pending prescription for later resume
-                    self._save_pending_prescription(
-                        request.session_id,
-                        order_info,
-                        all_evidence.copy(),
-                        request.patient_id or "GUEST",
-                        request.user_name  # Pass Firestore user_name for deterministic resume
-                    )
-                    # Set UI card type to show PrescriptionUploadCard
-                    ui_card_type = UICardType.PRESCRIPTION_UPLOAD
                     medicine_name = order_info.get("medicine_name", "This medication")
                     medicine_id = order_info.get("medicine_id", "")
-                    is_controlled = any("controlled_substance=True" in ev for ev in all_evidence)
-                    prescription_upload_data = PrescriptionUploadData(
-                        medicine_name=medicine_name,
-                        medicine_id=medicine_id,
-                        requires_prescription=True,
-                        is_controlled=is_controlled,
-                        message=f"{medicine_name} requires a valid prescription. Please upload your prescription to continue."
-                    )
-                    # Break the chain - wait for prescription upload
-                    decisions_made.append(self._to_agent_decision(current_output))
-                    all_evidence.extend(current_output.evidence)
-                    final_message = f"{medicine_name} requires a valid prescription. Please upload your prescription to proceed with the order."
-                    break
+                    dosage = order_info.get("strength") or order_info.get("dosage", "")
+                    
+                    # 1. CHECK FOR EXISTING VALID PRESCRIPTION IN FIRESTORE
+                    has_valid_rx = False
+                    if self._data_service and request.user_id:
+                        has_valid_rx = self._data_service.has_valid_prescription(
+                            request.user_id,
+                            medicine_name,
+                            dosage
+                        )
+                    
+                    if has_valid_rx:
+                        # BYPASS UPLOAD -> GO STRAIGHT TO PREVIEW
+                        print(f"✅ Reusing existing prescription for {medicine_name}")
+                        
+                        # Generate Order Preview Immediately
+                        quantity = int(order_info.get("quantity", 1))
+                        unit_price = 5.00
+                        if self._data_service:
+                            meds = self._data_service.search_medicine(medicine_name)
+                            if meds:
+                                unit_price = getattr(meds[0], 'price', 5.00) or 5.00
+                        
+                        ui_card_type = UICardType.ORDER_PREVIEW
+                        
+                        # Use strictly defined message
+                        final_message = f"Thank you for confirming. Our records indicate you already have a valid prescription for {medicine_name} {dosage}. Please review the details below and confirm to proceed."
+                        
+                        # Build Preview Data
+                        order_preview_data = OrderPreviewData(
+                            preview_id=f"PRV-{request.session_id[:8].upper()}",
+                            patient_id=request.patient_id or "GUEST",
+                            patient_name=request.user_name or "Guest Customer",
+                            items=[OrderPreviewItem(
+                                medicine_id=medicine_id,
+                                medicine_name=medicine_name,
+                                strength=dosage,
+                                quantity=quantity,
+                                prescription_required=True,
+                                unit_price=unit_price,
+                                supply_days=quantity
+                            )],
+                            total_amount=(unit_price * quantity) * 1.05 + 2.00,
+                            safety_decision="APPROVE",
+                            safety_reasons=[],
+                            requires_prescription=True
+                        )
+                        
+                        # Save state so "confirm" works
+                        self._save_order_preview(request.session_id, order_preview_data)
+                        
+                        # Break loop to return immediatley
+                        decisions_made.append(self._to_agent_decision(current_output))
+                        break
+
+                    else:
+                        # ORIGINAL FLOW: Request Upload
+                        self._save_pending_prescription(
+                            request.session_id,
+                            order_info,
+                            all_evidence.copy(),
+                            request.patient_id or "GUEST",
+                            request.user_name
+                        )
+                        # Set UI card type to show PrescriptionUploadCard
+                        ui_card_type = UICardType.PRESCRIPTION_UPLOAD
+                        is_controlled = any("controlled_substance=True" in ev for ev in all_evidence)
+                        prescription_upload_data = PrescriptionUploadData(
+                            medicine_name=medicine_name,
+                            medicine_id=medicine_id,
+                            requires_prescription=True,
+                            is_controlled=is_controlled,
+                            message=f"{medicine_name} requires a valid prescription. Please upload your prescription to continue."
+                        )
+                        # Break the chain - wait for prescription upload
+                        decisions_made.append(self._to_agent_decision(current_output))
+                        all_evidence.extend(current_output.evidence)
+                        final_message = f"{medicine_name} requires a valid prescription. Please upload your prescription to proceed with the order."
+                        break
                 
             elif next_agent == "FulfillmentAgent":
                 current_output = await self._delegate_to_fulfillment(
@@ -296,9 +366,21 @@ class OrchestratorAgent:
                 final_message = current_output.message
             
             # Check for prescription requirement in evidence
+            # Check for prescription requirement in evidence
             for ev in current_output.evidence:
                 if "requires_prescription=True" in ev or "prescription_required=True" in ev:
                     requires_prescription = True
+                
+                # Check inside structured item_data
+                if ev.startswith("item_data="):
+                    try:
+                        import json
+                        item_data = json.loads(ev.split("=", 1)[1])
+                        if item_data.get("prescription_required") is True:
+                            requires_prescription = True
+                    except:
+                        pass
+                        
                 if "controlled_substance=True" in ev:
                     requires_prescription = True
                     safety_warnings.append("Controlled substance requires special handling")
@@ -311,47 +393,61 @@ class OrchestratorAgent:
             # Generate user-friendly message based on final decision
             final_message = self._build_response_message(current_output, all_evidence, requires_prescription)
         
-        # Generate order preview card if we have medicine and quantity
+        # Generate order preview card if we have items
         if (current_output.decision == Decision.APPROVED and 
-            order_info.get("medicine_name") and 
-            order_info.get("quantity")):
+            order_info.get("items")):
             
             ui_card_type = UICardType.ORDER_PREVIEW
             
-            # Get price from data service if available
-            unit_price = 5.00  # Default price
-            if self._data_service:
-                med = self._data_service.get_medicine_by_id(order_info.get("medicine_id", ""))
-                if not med:
-                    meds = self._data_service.search_medicine(order_info["medicine_name"])
-                    if meds:
-                        med = meds[0]
-                if med:
-                    # Use price_per_unit if available, otherwise default
-                    unit_price = getattr(med, 'price', 5.00) or 5.00
+            # Build items for order preview from extracted order_info
+            preview_items = []
+            total_subtotal = 0.0
+            any_requires_prescription = requires_prescription
             
-            quantity = int(order_info["quantity"])
+            for item_data in order_info["items"]:
+                # Get price from data service if available
+                unit_price = 5.00  # Default price
+                if self._data_service:
+                    med = self._data_service.get_medicine_by_id(item_data.get("medicine_id", ""))
+                    if not med:
+                        meds = self._data_service.search_medicine(item_data["medicine_name"])
+                        if meds:
+                            med = meds[0]
+                    if med:
+                        unit_price = getattr(med, 'price', 5.00) or 5.00
+                        # Check per-item prescription requirement
+                        if med.prescription_required:
+                            any_requires_prescription = True
+                
+                quantity = int(item_data.get("quantity", 1))
+                item_subtotal = unit_price * quantity
+                total_subtotal += item_subtotal
+                
+                preview_items.append(OrderPreviewItem(
+                    medicine_id=item_data.get("medicine_id", ""),
+                    medicine_name=item_data["medicine_name"],
+                    strength=item_data.get("strength", ""),
+                    quantity=quantity,
+                    prescription_required=requires_prescription,
+                    unit_price=unit_price,
+                    supply_days=quantity
+                ))
             
             # DETERMINISTIC: Use Firestore user_name, never infer from demo CSV
             patient_name = request.user_name or "Guest Customer"
+            
+            # Calculate total: subtotal + 5% tax + $2 delivery
+            total_amount = total_subtotal * 1.05 + 2.00
             
             order_preview_data = OrderPreviewData(
                 preview_id=f"PRV-{request.session_id[:8].upper()}",
                 patient_id=request.patient_id or "GUEST",
                 patient_name=patient_name,
-                items=[OrderPreviewItem(
-                    medicine_id=order_info.get("medicine_id", ""),
-                    medicine_name=order_info["medicine_name"],
-                    strength=order_info.get("strength", ""),
-                    quantity=quantity,
-                    prescription_required=requires_prescription,
-                    unit_price=unit_price,
-                    supply_days=quantity
-                )],
-                total_amount=(unit_price * quantity) * 1.05 + 2.00,  # subtotal + 5% tax + $2 delivery
-                safety_decision="APPROVE" if not requires_prescription else "NEEDS_PRESCRIPTION",
+                items=preview_items,
+                total_amount=total_amount,
+                safety_decision="APPROVE" if not any_requires_prescription else "NEEDS_PRESCRIPTION",
                 safety_reasons=safety_warnings,
-                requires_prescription=requires_prescription
+                requires_prescription=any_requires_prescription
             )
             
             # Save order preview to session for later confirmation
@@ -375,20 +471,87 @@ class OrchestratorAgent:
             prescription_upload_data=prescription_upload_data
         )
     
-    def _extract_order_info(self, evidence: List[str]) -> Dict[str, str]:
-        """Extract order information from evidence list."""
-        info = {}
+    def _extract_order_info(self, evidence: List[str]) -> Dict[str, Any]:
+        """
+        Extract order information from evidence list.
+        Returns dict with 'items' list for multi-item support.
+        Single-item fields (medicine_name, etc) are kept for backward compatibility.
+        """
+        info = {"items": []}
+        legacy_info = {}
+        
+        # Deduplication map: med_name_lower -> List[item_dict]
+        # We use a list to handle multiple variants (e.g. 500mg and 650mg) of the same medicine
+        items_map = {}
+        
         for ev in evidence:
-            if ev.startswith("medicine_name="):
-                info["medicine_name"] = ev.split("=")[1]
+            # NEW: Parse structured item data (preferred)
+            if ev.startswith("item_data="):
+                try:
+                    item_json = ev.split("=", 1)[1]
+                    item_data = json.loads(item_json)
+                    
+                    # Generate key details
+                    med = item_data.get("medicine_name", "").strip().lower()
+                    new_strength = item_data.get("strength", "").strip().lower()
+                    
+                    if med:
+                        if med not in items_map:
+                            items_map[med] = [item_data]
+                        else:
+                            # Try to find compatible item to merge
+                            merged = False
+                            for existing_item in items_map[med]:
+                                existing_strength = existing_item.get("strength", "").strip().lower()
+                                
+                                # Merge if strengths match OR one is missing (refinement)
+                                if existing_strength == new_strength or not existing_strength or not new_strength:
+                                    existing_item.update(item_data)
+                                    merged = True
+                                    break
+                            
+                            if not merged:
+                                items_map[med].append(item_data)
+                            
+                except Exception as e:
+                    print(f"Failed to parse item_data: {e}")
+            
+            # LEGACY: Parse individual fields (fallback)
+            elif ev.startswith("medicine_name="):
+                legacy_info["medicine_name"] = ev.split("=")[1]
             elif ev.startswith("medicine_id="):
-                info["medicine_id"] = ev.split("=")[1]
+                legacy_info["medicine_id"] = ev.split("=")[1]
             elif ev.startswith("quantity=") or ev.startswith("qty="):
-                info["quantity"] = ev.split("=")[1]
+                legacy_info["quantity"] = ev.split("=")[1]
             elif ev.startswith("strength="):
-                info["strength"] = ev.split("=")[1]
+                legacy_info["strength"] = ev.split("=")[1]
             elif ev.startswith("form="):
-                info["form"] = ev.split("=")[1]
+                legacy_info["form"] = ev.split("=")[1]
+        
+        # Populate items from map values (exclude None/Empty)
+        info["items"] = []
+        for item_list in items_map.values():
+            info["items"].extend(item_list)
+        
+        # If no structured items found, build from legacy fields
+        if not info["items"] and legacy_info.get("medicine_name"):
+            info["items"].append({
+                "medicine_id": legacy_info.get("medicine_id", ""),
+                "medicine_name": legacy_info["medicine_name"],
+                "strength": legacy_info.get("strength", ""),
+                "quantity": legacy_info.get("quantity", "1"),
+                "form": legacy_info.get("form", "")
+            })
+            
+        # Ensure root backward-compatibility fields are set from first item
+        if info["items"]:
+            first_item = info["items"][0]
+            info["medicine_name"] = first_item.get("medicine_name", "")
+            info["quantity"] = str(first_item.get("quantity", 1))
+            info["medicine_id"] = first_item.get("medicine_id", "")
+            info["strength"] = first_item.get("strength", "")
+            info["form"] = first_item.get("form", "")
+            
         return info
     
     def _build_response_message(
@@ -428,9 +591,9 @@ class OrchestratorAgent:
                     return f"Perfect! I'll prepare an order for {quantity} {form or 'units'} of {medicine_full}."
             else:
                 # No quantity provided - ask for it
-                msg = f"Yes, {medicine_full} is available."
+                msg = f"Yes, we have {medicine_full} available in our store."
                 if requires_prescription:
-                    msg += " This medication requires a valid prescription."
+                    msg += " Please note that this medication requires a valid prescription."
                 msg += " How many would you like to order?"
                 return msg
             
@@ -658,7 +821,8 @@ class OrchestratorAgent:
         session_id: str,
         patient_id: Optional[str],
         user_name: Optional[str] = None,  # User name from Firestore (priority)
-        user_id: Optional[str] = None     # User ID for persistence
+        user_id: Optional[str] = None,    # User ID for persistence
+        conversation_id: Optional[str] = None  # Firestore conversation ID for history
     ) -> AgentOutput:
         """Delegate to PharmacistAgent"""
         # Use user_name from Firestore if provided, otherwise fallback to demo patient lookup
@@ -669,7 +833,10 @@ class OrchestratorAgent:
             if patient:
                 patient_name = patient.patient_name
         
-        return await self.pharmacist.process_message(message, session_id, patient_id, patient_name, user_id)
+        return await self.pharmacist.process_message(
+            message, session_id, patient_id, patient_name, user_id, conversation_id
+        )
+
 
     async def _delegate_to_inventory(
         self, 
@@ -680,16 +847,24 @@ class OrchestratorAgent:
         medicine_name = ""
         dosage = None
         form = None
+        items = []
         
         for ev in evidence:
-            if ev.startswith("medicine_name="):
+            if ev.startswith("item_data="):
+                try:
+                    import json
+                    item_json = ev.split("=", 1)[1]
+                    items.append(json.loads(item_json))
+                except Exception as e:
+                    print(f"Failed to parse item_data in delegation: {e}")
+            elif ev.startswith("medicine_name="):
                 medicine_name = ev.split("=")[1]
             elif ev.startswith("dosage="):
                 dosage = ev.split("=")[1]
             elif ev.startswith("form="):
                 form = ev.split("=")[1]
         
-        return await self.inventory.check_stock(medicine_name, form, dosage)
+        return await self.inventory.check_stock(medicine_name, form, dosage, items=items)
 
     async def _delegate_to_policy(
         self, 
@@ -717,7 +892,20 @@ class OrchestratorAgent:
         quantity = 1
         
         for ev in evidence:
-            if ev.startswith("medicine_id="):
+            if ev.startswith("item_data="):
+                try:
+                    import json
+                    item_json = ev.split("=", 1)[1]
+                    item_data = json.loads(item_json)
+                    # Mapping to Fulfillment item structure if needed
+                    # Fulfillment expects: medicine_id, medicine_name, quantity, unit_price
+                    # Inventory item_data has these (except unit_price might need default)
+                    if "unit_price" not in item_data:
+                        item_data["unit_price"] = 5.00
+                    items.append(item_data)
+                except:
+                    pass
+            elif ev.startswith("medicine_id="):
                 medicine_id = ev.split("=")[1]
             elif ev.startswith("medicine_name="):
                 medicine_name = ev.split("=")[1]
@@ -727,7 +915,8 @@ class OrchestratorAgent:
                 except ValueError:
                     pass
         
-        if medicine_name:
+        # Fallback to legacy single item if no structured items found
+        if not items and medicine_name:
             items.append({
                 "medicine_id": medicine_id or f"MED-{medicine_name[:3].upper()}",
                 "medicine_name": medicine_name,

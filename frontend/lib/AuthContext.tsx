@@ -37,7 +37,7 @@ interface AuthContextType {
     userRole: UserRole;
     userName: string | null;
     signIn: (email: string, password: string) => Promise<void>;
-    signUp: (email: string, password: string, name: string) => Promise<void>;
+    signUp: (email: string, password: string, name: string, phone: string) => Promise<void>;
     signOut: () => Promise<void>;
 }
 
@@ -185,15 +185,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         localStorage.setItem('userRole', role || 'customer');
     };
 
-    // Sign up with email and password (NEW)
-    const signUp = async (email: string, password: string, name: string) => {
+    // Sign up with email and password (modified to include phone)
+    const signUp = async (email: string, password: string, name: string, phone: string) => {
         const result = await createUserWithEmailAndPassword(auth, email, password);
         const token = await result.user.getIdToken();
         setIdToken(token);
         localStorage.setItem('authToken', token);
 
-        // Create user profile with name and default "customer" role
-        await createUserProfile(result.user.uid, email, name);
+        // Create user profile with name, phone, and default "customer" role
+        // Use common service to ensure consistency
+        await ensureUserDocument(result.user.uid, email, name, phone);
+
         setUserRole('customer');
         setUserName(name);
         localStorage.setItem('userRole', 'customer');
