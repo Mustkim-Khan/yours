@@ -369,7 +369,7 @@ class RefillPredictionAgent:
                     }
                 ],
                 temperature=self.temperature,
-                max_tokens=100
+                max_completion_tokens=100
             )
             return response.choices[0].message.content.strip()
         except Exception as e:

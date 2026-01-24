@@ -7,6 +7,7 @@ from .fulfillment_agent import FulfillmentAgent
 from .policy_agent import PolicyAgent
 from .refill_prediction_agent import RefillPredictionAgent
 from .orchestrator_agent import OrchestratorAgent
+from .vision_pill_identifier_agent import VisionPillIdentifierAgent
 
 __all__ = [
     "PharmacistAgent",
@@ -15,4 +16,5 @@ __all__ = [
     "PolicyAgent",
     "RefillPredictionAgent",
     "OrchestratorAgent",
+    "VisionPillIdentifierAgent",
 ]

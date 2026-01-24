@@ -381,6 +381,97 @@ async def upload_prescription(request: PrescriptionUploadRequest):
         raise HTTPException(status_code=500, detail=f"Prescription upload failed: {str(e)}")
 
 
+# ============ PILL IDENTIFICATION ENDPOINT ============
+
+class PillIdentifyRequest(BaseModel):
+    """Pill identification request from frontend"""
+    image_base64: str  # Base64 encoded pill image
+    session_id: str = "default"
+    patient_id: Optional[str] = None
+
+
+class PillIdentifyResponse(BaseModel):
+    """Pill identification response"""
+    success: bool
+    message: str
+    disclaimer: str
+    possible_medicines: list = []
+    top_match: Optional[dict] = None
+    pharmacist_message: Optional[str] = None
+    needs_clearer_image: bool = False
+
+
+@app.post("/pill/identify", response_model=PillIdentifyResponse)
+async def identify_pill(
+    request: PillIdentifyRequest,
+    current_user: Optional[dict] = Depends(get_optional_user)
+):
+    """
+    Identify a pill from an uploaded image using GPT Vision.
+    
+    Flow:
+    1. Accept pill image (base64)
+    2. Analyze using VisionPillIdentifierAgent
+    3. Return suggestions with safety disclaimer
+    4. Frontend injects response into chat for pharmacist confirmation
+    
+    IMPORTANT: This is AI-assisted identification only.
+    Final confirmation must come from user through normal chat flow.
+    """
+    from agents.vision_pill_identifier_agent import VisionPillIdentifierAgent
+    from langsmith.run_helpers import traceable as ls_traceable
+    
+    @ls_traceable(
+        name="PillIdentification",
+        run_type="chain",
+        metadata={"type": "vision", "model": "gpt-5.2"},
+        tags=["pill_identification", "vision"]
+    )
+    async def _identify_pill_traced(image_b64: str, session_id: str):
+        vision_agent = VisionPillIdentifierAgent()
+        result = await vision_agent.identify_pill(
+            image_base64=image_b64,
+            session_id=session_id
+        )
+        return result
+    
+    try:
+        result = await _identify_pill_traced(
+            request.image_base64, 
+            request.session_id
+        )
+        
+        # Generate pharmacist prompt for confirmation flow
+        pharmacist_message = None
+        if result.get("success") and result.get("top_match"):
+            match = result["top_match"]
+            name = match.get("name", "")
+            strength = match.get("strength", "")
+            if name:
+                pharmacist_message = f"Based on the pill image, this appears to be {name} {strength}. Would you like to order this medicine?"
+        
+        return PillIdentifyResponse(
+            success=result.get("success", False),
+            message=result.get("message", "Could not identify pill"),
+            disclaimer=result.get("disclaimer", "⚠️ AI-assisted identification. Please verify."),
+            possible_medicines=result.get("possible_medicines", []),
+            top_match=result.get("top_match"),
+            pharmacist_message=pharmacist_message,
+            needs_clearer_image=result.get("needs_clearer_image", False)
+        )
+        
+    except Exception as e:
+        return PillIdentifyResponse(
+            success=False,
+            message=f"Error identifying pill: {str(e)}",
+            disclaimer="⚠️ AI-assisted identification. Please verify.",
+            possible_medicines=[],
+            top_match=None,
+            pharmacist_message=None,
+            needs_clearer_image=False
+        )
+
+
 @app.get("/inventory/search")
 async def search_inventory(query: str = ""):
     """Search inventory for medicines - returns complete medicine data"""

@@ -52,9 +52,11 @@ export default function ChatPage() {
     const [desktopNotifications, setDesktopNotifications] = useState(false);
     const [prescriptionVerified, setPrescriptionVerified] = useState(false); // Track if prescription is verified
     const [conversationId, setConversationId] = useState<string | null>(null); // Firestore conversation ID
+    const [pendingPillImage, setPendingPillImage] = useState<{file: File, base64: string} | null>(null); // Pending pill image for identification
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
+    const pillImageInputRef = useRef<HTMLInputElement>(null);  // Pill identification image input
     const prescriptionCalledRef = useRef<Set<string>>(new Set()); // Track which messages have had prescription API called
 
     // Get authenticated user and name
@@ -452,6 +454,129 @@ export default function ChatPage() {
         }
     };
 
+    // Handle pill image selection (store for preview, don't send yet)
+    const handlePillImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        // Reset file input for re-selection
+        e.target.value = '';
+
+        // Convert to base64 and store for preview
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            const base64 = reader.result as string;
+            setPendingPillImage({ file, base64 });
+        };
+        reader.readAsDataURL(file);
+    };
+
+    // Cancel pending pill image
+    const cancelPillImage = () => {
+        setPendingPillImage(null);
+    };
+
+    // Send message with optional pill image
+    const sendMessageWithImage = async () => {
+        if (!selectedPatient || isLoading) return;
+        if (!inputValue.trim() && !pendingPillImage) return;
+
+        const userText = inputValue.trim() || 'What is this pill?';
+        const imageToSend = pendingPillImage;
+        
+        // Clear input and pending image
+        setInputValue('');
+        setPendingPillImage(null);
+
+        // Show user message with image indicator
+        const userMessage: Message = {
+            id: Date.now().toString(),
+            role: 'user',
+            content: imageToSend ? `📷 [Pill Image] ${userText}` : userText,
+            timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, userMessage]);
+        setIsLoading(true);
+
+        // Save user message to Firestore
+        if (conversationId) {
+            saveMessage(conversationId, { sender: 'user', text: userMessage.content, type: 'chat' })
+                .catch(err => console.error('[Firestore] Failed to save user message:', err));
+        }
+
+        try {
+            if (imageToSend) {
+                // Call pill identification API
+                const res = await fetch('/api/pill/identify', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(idToken ? { 'Authorization': `Bearer ${idToken}` } : {})
+                    },
+                    body: JSON.stringify({
+                        image_base64: imageToSend.base64,
+                        session_id: `session-${selectedPatient.patient_id}`,
+                        patient_id: selectedPatient.patient_id,
+                        user_question: userText,
+                    }),
+                });
+
+                const data = await res.json();
+
+                const resultMessage: Message = {
+                    id: (Date.now() + 1).toString(),
+                    role: 'assistant',
+                    content: data.message + '\n\n' + data.disclaimer,
+                    timestamp: new Date(),
+                    aiAnnotation: data.pharmacist_message || undefined,
+                    badges: data.success && data.top_match ? [
+                        { label: `Confidence: ${data.top_match.confidence}`, color: data.top_match.confidence === 'high' ? 'green' : 'yellow' }
+                    ] : undefined,
+                };
+                setMessages(prev => [...prev, resultMessage]);
+
+                // If successful, inject into extracted entities
+                if (data.success && data.top_match) {
+                    const match = data.top_match;
+                    setCurrentEntities({
+                        entities: [{
+                            medicine: match.name,
+                            dosage: match.strength || '-',
+                            quantity: null,
+                            frequency: null,
+                            duration: null,
+                            prescription_required: null,
+                            stock_status: 'Pending Check'
+                        }]
+                    });
+                }
+
+                // Save to Firestore
+                if (conversationId) {
+                    saveMessage(conversationId, {
+                        sender: 'assistant',
+                        text: resultMessage.content,
+                        type: 'chat',
+                        metadata: { pillIdentification: data }
+                    }).catch(err => console.error('[Firestore] Failed to save pill ID message:', err));
+                }
+            } else {
+                // Regular text message - use existing sendMessage logic
+                await sendMessage(userText);
+            }
+        } catch (error) {
+            console.error('Failed to process message:', error);
+            setMessages(prev => [...prev, {
+                id: (Date.now() + 1).toString(),
+                role: 'assistant',
+                content: '❌ Failed to process your request. Please try again.',
+                timestamp: new Date(),
+            }]);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
     // Mock extracted entities for display
     const displayEntities = currentEntities?.entities?.[0] || null;
 
@@ -530,14 +655,6 @@ export default function ChatPage() {
                                 Stock: {displayEntities?.stock_status || '-'}
                             </span>
                         </div>
-                    </div>
-                </div>
-
-                {/* Next Check-up */}
-                <div className="p-4 border-b border-gray-200 dark:border-gray-800">
-                    <div className="flex items-center gap-2 text-orange-500">
-                        <Clock className="w-4 h-4" />
-                        <span className="text-sm">Next check-up in 14 days</span>
                     </div>
                 </div>
 
@@ -881,7 +998,32 @@ export default function ChatPage() {
                         </div>
                     )}
 
-                    <form onSubmit={handleSubmit} className="flex items-center gap-3">
+                    <form onSubmit={(e) => { e.preventDefault(); pendingPillImage ? sendMessageWithImage() : sendMessage(inputValue); }} className="flex flex-col gap-2">
+                        {/* Pending Image Preview */}
+                        {pendingPillImage && (
+                            <div className="flex items-center gap-2 p-2 bg-indigo-50 dark:bg-indigo-900/30 rounded-lg border border-indigo-200 dark:border-indigo-700">
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img 
+                                    src={pendingPillImage.base64} 
+                                    alt="Pill to identify" 
+                                    className="w-12 h-12 object-cover rounded-lg border border-indigo-300"
+                                />
+                                <div className="flex-1">
+                                    <p className="text-sm font-medium text-indigo-700 dark:text-indigo-300">📷 Pill image attached</p>
+                                    <p className="text-xs text-indigo-500 dark:text-indigo-400">Type your question and press send</p>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={cancelPillImage}
+                                    className="p-1 text-indigo-500 hover:text-indigo-700 dark:hover:text-indigo-300"
+                                    title="Remove image"
+                                >
+                                    <X className="w-4 h-4" />
+                                </button>
+                            </div>
+                        )}
+
+                        <div className="flex items-center gap-3">
                         {/* Left Actions */}
                         {isRecording ? (
                             <button
@@ -893,12 +1035,23 @@ export default function ChatPage() {
                                 <X className="w-5 h-5" />
                             </button>
                         ) : (
-                            <button
-                                type="button"
-                                className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
-                            >
-                                <Paperclip className="w-5 h-5" />
-                            </button>
+                            <>
+                                <button
+                                    type="button"
+                                    onClick={() => pillImageInputRef.current?.click()}
+                                    className={`p-2 transition-colors ${pendingPillImage ? 'text-indigo-500' : 'text-gray-400 hover:text-gray-600'}`}
+                                    title="Identify pill from image"
+                                >
+                                    <Paperclip className="w-5 h-5" />
+                                </button>
+                                <input
+                                    type="file"
+                                    ref={pillImageInputRef}
+                                    hidden
+                                    accept="image/*"
+                                    onChange={handlePillImageUpload}
+                                />
+                            </>
                         )}
 
                         {/* Input Field */}
@@ -907,7 +1060,7 @@ export default function ChatPage() {
                                 type="text"
                                 value={isRecording ? "" : inputValue}
                                 onChange={(e) => setInputValue(e.target.value)}
-                                placeholder={isRecording ? "Listening..." : "Type your message..."}
+                                placeholder={isRecording ? "Listening..." : (pendingPillImage ? "Ask about this pill..." : "Type your message...")}
                                 className={`w-full px-4 py-3 rounded-lg border border-gray-200 dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 transition-all ${isRecording ? 'bg-gray-100 dark:bg-gray-800 text-transparent' : 'bg-gray-50 dark:bg-gray-800'}`}
                                 disabled={isLoading || isRecording}
                             />
@@ -934,7 +1087,7 @@ export default function ChatPage() {
 
                                 <button
                                     type="submit"
-                                    disabled={!inputValue.trim() || isLoading}
+                                    disabled={(!inputValue.trim() && !pendingPillImage) || isLoading}
                                     className="p-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                                 >
                                     {isLoading ? (
@@ -945,6 +1098,7 @@ export default function ChatPage() {
                                 </button>
                             </>
                         )}
+                        </div>
                     </form>
                 </div>
             </div>

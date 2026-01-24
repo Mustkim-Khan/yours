@@ -101,7 +101,7 @@ async def validate_prescription_image(
                     ]
                 }
             ],
-            max_tokens=500
+            max_completion_tokens=500
         )
         
         # Parse response
