@@ -1,22 +1,56 @@
 /**
- * Login Page - Pharmacy-Themed Authentication
- * =============================================
- * Professional pharmacy-grade login with Sign In/Sign Up and role selection.
+ * Login Page - $1M Premium Authentication Experience
+ * ===================================================
+ * Ultra-premium dark glassmorphism design with animated effects.
  * 
  * Features:
- * - Sign In / Sign Up tabs
+ * - Sign In / Sign Up modes
  * - Role selector (Customer / Admin)
- * - Pharmacy-themed design (white, blue, soft green)
- * - Redirects based on role after auth
+ * - Animated floating orbs background
+ * - Glassmorphism card with glow effects
+ * - Premium micro-interactions
  */
 
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useAuth } from '@/lib/AuthContext';
+import { AnimatePresence, motion } from 'framer-motion';
+import { ArrowRight, CheckCircle2, Eye, EyeOff, Loader2, Lock, Mail, Shield, Sparkles, User } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useAuth, UserRole } from '@/lib/AuthContext';
+import { useEffect, useState } from 'react';
 
 type AuthMode = 'signin' | 'signup';
+
+// Floating orb component for background
+const FloatingOrb = ({ 
+    color, 
+    size, 
+    top, 
+    left, 
+    delay = 0 
+}: { 
+    color: string; 
+    size: number; 
+    top: string; 
+    left: string; 
+    delay?: number;
+}) => (
+    <motion.div
+        className={`absolute rounded-full blur-3xl opacity-40 ${color}`}
+        style={{ width: size, height: size, top, left }}
+        animate={{
+            y: [0, -30, 0],
+            x: [0, 20, 0],
+            scale: [1, 1.1, 1],
+        }}
+        transition={{
+            duration: 8,
+            delay,
+            repeat: Infinity,
+            ease: "easeInOut"
+        }}
+    />
+);
 
 export default function LoginPage() {
     const [mode, setMode] = useState<AuthMode>('signin');
@@ -28,6 +62,8 @@ export default function LoginPage() {
     const [selectedRole, setSelectedRole] = useState<'customer' | 'admin'>('customer');
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
+    const [showPassword, setShowPassword] = useState(false);
+    const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
     const router = useRouter();
     const { signIn, signUp, user, userRole } = useAuth();
@@ -50,7 +86,6 @@ export default function LoginPage() {
 
         try {
             if (mode === 'signup') {
-                // Validate passwords match
                 if (password !== confirmPassword) {
                     setError('Passwords do not match');
                     setLoading(false);
@@ -72,19 +107,15 @@ export default function LoginPage() {
                     return;
                 }
 
-                // Format phone to E.164 if missing country code
-                // Minimal frontend validation as requested
-                let formattedPhone = phone.trim();
-                // Simple assumption for MVP: if no +, add +91 (or let it be if user typed it)
-                // Ideally use libphonenumber, but strict instruction is "UI validation only"
-
+                // Format phone to E.164 with +91 prefix
+                let formattedPhone = phone.trim().replace(/\s+/g, '');
+                if (!formattedPhone.startsWith('+')) {
+                    formattedPhone = '+91' + formattedPhone;
+                }
                 await signUp(email, password, name.trim(), formattedPhone);
-                // New users always get 'customer' role, redirect to chat
                 router.push('/');
             } else {
                 await signIn(email, password);
-                // Redirect based on selected role (will be verified against Firestore)
-                // The actual role check happens in useEffect above after userRole is fetched
             }
         } catch (err: any) {
             const errorCode = err?.code || '';
@@ -116,266 +147,330 @@ export default function LoginPage() {
     };
 
     return (
-        <div className="min-h-screen flex bg-gradient-to-br from-slate-50 via-blue-50 to-emerald-50">
-            {/* Left Panel - Form */}
-            <div className="flex-1 flex items-center justify-center p-8">
-                <div className="w-full max-w-md">
-                    {/* Logo & Header */}
-                    <div className="text-center mb-8">
-                        <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-emerald-500 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
-                            <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
-                            </svg>
-                        </div>
-                        <h1 className="text-2xl font-bold text-slate-800">Your Trusted AI Pharmacy</h1>
-                        <p className="text-slate-500 mt-2">Secure access to prescriptions, refills, and AI-managed orders</p>
-                    </div>
+        <div className="min-h-screen flex items-center justify-center relative overflow-hidden bg-slate-950">
+            {/* Animated Background */}
+            <div className="absolute inset-0">
+                {/* Gradient mesh background */}
+                <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-violet-900/20 via-slate-950 to-slate-950" />
+                
+                {/* Floating orbs */}
+                <FloatingOrb color="bg-violet-600" size={400} top="-10%" left="10%" delay={0} />
+                <FloatingOrb color="bg-cyan-500" size={300} top="60%" left="70%" delay={2} />
+                <FloatingOrb color="bg-fuchsia-500" size={250} top="30%" left="-5%" delay={4} />
+                <FloatingOrb color="bg-indigo-500" size={350} top="70%" left="20%" delay={1} />
+                
+                {/* Grid overlay */}
+                <div 
+                    className="absolute inset-0 opacity-[0.02]"
+                    style={{
+                        backgroundImage: `linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px),
+                                         linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)`,
+                        backgroundSize: '50px 50px'
+                    }}
+                />
+            </div>
 
-                    {/* Auth Mode Tabs */}
-                    <div className="flex bg-slate-100 rounded-xl p-1 mb-6">
-                        <button
-                            type="button"
-                            onClick={() => { setMode('signin'); setError(null); }}
-                            className={`flex-1 py-2.5 text-sm font-medium rounded-lg transition-all ${mode === 'signin'
-                                ? 'bg-white text-blue-600 shadow-sm'
-                                : 'text-slate-500 hover:text-slate-700'
-                                }`}
+            {/* Main Content */}
+            <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.6, ease: [0.25, 0.46, 0.45, 0.94] }}
+                className="relative z-10 w-full max-w-md mx-4"
+            >
+                {/* Glass Card */}
+                <div className="relative">
+                    {/* Glow effect behind card */}
+                    <div className="absolute -inset-1 bg-gradient-to-r from-violet-600 via-fuchsia-500 to-cyan-500 rounded-3xl blur-xl opacity-30" />
+                    
+                    {/* Card content */}
+                    <div className="relative bg-slate-900/80 backdrop-blur-2xl border border-white/10 rounded-3xl p-8 shadow-2xl">
+                        {/* Logo & Header */}
+                        <motion.div 
+                            initial={{ opacity: 0, y: -10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ delay: 0.2 }}
+                            className="text-center mb-8"
                         >
-                            Sign In
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => { setMode('signup'); setError(null); }}
-                            className={`flex-1 py-2.5 text-sm font-medium rounded-lg transition-all ${mode === 'signup'
-                                ? 'bg-white text-blue-600 shadow-sm'
-                                : 'text-slate-500 hover:text-slate-700'
-                                }`}
-                        >
-                            Sign Up
-                        </button>
-                    </div>
-
-                    {/* Error Alert */}
-                    {error && (
-                        <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-lg mb-6 flex items-start gap-3">
-                            <svg className="w-5 h-5 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                            <span>{error}</span>
-                        </div>
-                    )}
-
-                    {/* Form */}
-                    <form onSubmit={handleSubmit} className="space-y-5">
-                        {/* Name (Sign Up only) */}
-                        {mode === 'signup' && (
-                            <div>
-                                <label htmlFor="name" className="block text-sm font-medium text-slate-700 mb-2">
-                                    Full Name
-                                </label>
-                                <input
-                                    id="name"
-                                    type="text"
-                                    value={name}
-                                    onChange={(e) => setName(e.target.value)}
-                                    required
-                                    autoComplete="name"
-                                    placeholder="John Doe"
-                                    className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition shadow-sm"
-                                />
+                            <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500 via-fuchsia-500 to-cyan-500 mb-5 shadow-lg shadow-violet-500/25">
+                                <Sparkles className="w-8 h-8 text-white" />
                             </div>
-                        )}
+                            <h1 className="text-2xl font-bold bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
+                                Your Pharma AI
+                            </h1>
+                            <p className="text-slate-400 text-sm mt-2">
+                                {mode === 'signin' ? 'Welcome back! Sign in to continue' : 'Create your account to get started'}
+                            </p>
+                        </motion.div>
 
-                        {/* Phone Number (Sign Up only) */}
-                        {mode === 'signup' && (
-                            <div>
-                                <label htmlFor="phone" className="block text-sm font-medium text-slate-700 mb-2">
-                                    Phone Number
-                                </label>
-                                <input
-                                    id="phone"
-                                    type="tel"
-                                    value={phone}
-                                    onChange={(e) => setPhone(e.target.value)}
-                                    required
-                                    autoComplete="tel"
-                                    placeholder="+919876543210"
-                                    className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition shadow-sm"
-                                />
-                            </div>
-                        )}
-
-                        {/* Email */}
-                        <div>
-                            <label htmlFor="email" className="block text-sm font-medium text-slate-700 mb-2">
-                                Email Address
-                            </label>
-                            <input
-                                id="email"
-                                type="email"
-                                value={email}
-                                onChange={(e) => setEmail(e.target.value)}
-                                required
-                                autoComplete="email"
-                                placeholder="you@example.com"
-                                className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition shadow-sm"
-                            />
+                        {/* Auth Mode Tabs */}
+                        <div className="flex bg-slate-800/50 rounded-2xl p-1.5 mb-6 border border-white/5">
+                            {['signin', 'signup'].map((tabMode) => (
+                                <button
+                                    key={tabMode}
+                                    type="button"
+                                    onClick={() => { setMode(tabMode as AuthMode); setError(null); }}
+                                    className={`flex-1 py-3 text-sm font-medium rounded-xl transition-all duration-300 ${
+                                        mode === tabMode
+                                            ? 'bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white shadow-lg shadow-violet-500/25'
+                                            : 'text-slate-400 hover:text-white'
+                                    }`}
+                                >
+                                    {tabMode === 'signin' ? 'Sign In' : 'Sign Up'}
+                                </button>
+                            ))}
                         </div>
 
-                        {/* Password */}
-                        <div>
-                            <label htmlFor="password" className="block text-sm font-medium text-slate-700 mb-2">
-                                Password
-                            </label>
-                            <input
-                                id="password"
-                                type="password"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                required
-                                autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
-                                placeholder="••••••••"
-                                className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition shadow-sm"
-                            />
-                        </div>
+                        {/* Error Alert */}
+                        <AnimatePresence mode="wait">
+                            {error && (
+                                <motion.div
+                                    initial={{ opacity: 0, y: -10, height: 0 }}
+                                    animate={{ opacity: 1, y: 0, height: 'auto' }}
+                                    exit={{ opacity: 0, y: -10, height: 0 }}
+                                    className="bg-red-500/10 border border-red-500/30 text-red-400 px-4 py-3 rounded-xl mb-6 flex items-center gap-3 text-sm"
+                                >
+                                    <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                                    {error}
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
 
-                        {/* Confirm Password (Sign Up only) */}
-                        {mode === 'signup' && (
-                            <div>
-                                <label htmlFor="confirmPassword" className="block text-sm font-medium text-slate-700 mb-2">
-                                    Confirm Password
+                        {/* Form */}
+                        <form onSubmit={handleSubmit} className="space-y-5">
+                            <AnimatePresence mode="wait">
+                                {mode === 'signup' && (
+                                    <motion.div
+                                        key="signup-fields"
+                                        initial={{ opacity: 0, height: 0 }}
+                                        animate={{ opacity: 1, height: 'auto' }}
+                                        exit={{ opacity: 0, height: 0 }}
+                                        transition={{ duration: 0.3 }}
+                                        className="space-y-5"
+                                    >
+                                        {/* Name */}
+                                        <div className="group">
+                                            <label className="block text-xs font-medium text-slate-400 mb-2 uppercase tracking-wider">
+                                                Full Name
+                                            </label>
+                                            <div className="relative">
+                                                <User className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500 group-focus-within:text-violet-400 transition-colors" />
+                                                <input
+                                                    type="text"
+                                                    value={name}
+                                                    onChange={(e) => setName(e.target.value)}
+                                                    required
+                                                    placeholder="John Doe"
+                                                    className="w-full pl-12 pr-4 py-3.5 bg-slate-800/50 border border-white/10 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 transition-all"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        {/* Phone */}
+                                        <div className="group">
+                                            <label className="block text-xs font-medium text-slate-400 mb-2 uppercase tracking-wider">
+                                                Phone Number
+                                            </label>
+                                            <div className="relative">
+                                                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 text-sm">+91</span>
+                                                <input
+                                                    type="tel"
+                                                    value={phone}
+                                                    onChange={(e) => setPhone(e.target.value)}
+                                                    required
+                                                    placeholder="9876543210"
+                                                    className="w-full pl-14 pr-4 py-3.5 bg-slate-800/50 border border-white/10 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 transition-all"
+                                                />
+                                            </div>
+                                        </div>
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
+
+                            {/* Email */}
+                            <div className="group">
+                                <label className="block text-xs font-medium text-slate-400 mb-2 uppercase tracking-wider">
+                                    Email Address
                                 </label>
-                                <input
-                                    id="confirmPassword"
-                                    type="password"
-                                    value={confirmPassword}
-                                    onChange={(e) => setConfirmPassword(e.target.value)}
-                                    required
-                                    autoComplete="new-password"
-                                    placeholder="••••••••"
-                                    className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition shadow-sm"
-                                />
+                                <div className="relative">
+                                    <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500 group-focus-within:text-violet-400 transition-colors" />
+                                    <input
+                                        type="email"
+                                        value={email}
+                                        onChange={(e) => setEmail(e.target.value)}
+                                        required
+                                        placeholder="you@example.com"
+                                        className="w-full pl-12 pr-4 py-3.5 bg-slate-800/50 border border-white/10 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 transition-all"
+                                    />
+                                </div>
                             </div>
-                        )}
 
-                        {/* Role Selector (Sign In only - for admin access) */}
-                        {mode === 'signin' && (
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700 mb-2">
-                                    Login as
+                            {/* Password */}
+                            <div className="group">
+                                <label className="block text-xs font-medium text-slate-400 mb-2 uppercase tracking-wider">
+                                    Password
                                 </label>
-                                <div className="flex gap-3">
+                                <div className="relative">
+                                    <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500 group-focus-within:text-violet-400 transition-colors" />
+                                    <input
+                                        type={showPassword ? 'text' : 'password'}
+                                        value={password}
+                                        onChange={(e) => setPassword(e.target.value)}
+                                        required
+                                        placeholder="••••••••"
+                                        className="w-full pl-12 pr-12 py-3.5 bg-slate-800/50 border border-white/10 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 transition-all"
+                                    />
                                     <button
                                         type="button"
-                                        onClick={() => setSelectedRole('customer')}
-                                        className={`flex-1 py-3 px-4 rounded-xl border-2 transition-all flex items-center justify-center gap-2 ${selectedRole === 'customer'
-                                            ? 'border-blue-500 bg-blue-50 text-blue-700'
-                                            : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
-                                            }`}
+                                        onClick={() => setShowPassword(!showPassword)}
+                                        className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors"
                                     >
-                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                                        </svg>
-                                        Customer
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => setSelectedRole('admin')}
-                                        className={`flex-1 py-3 px-4 rounded-xl border-2 transition-all flex items-center justify-center gap-2 ${selectedRole === 'admin'
-                                            ? 'border-emerald-500 bg-emerald-50 text-emerald-700'
-                                            : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
-                                            }`}
-                                    >
-                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                                        </svg>
-                                        Admin
+                                        {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                                     </button>
                                 </div>
                             </div>
-                        )}
 
-                        {/* Submit Button */}
-                        <button
-                            type="submit"
-                            disabled={loading}
-                            className="w-full py-3.5 px-4 bg-gradient-to-r from-blue-500 to-emerald-500 text-white font-semibold rounded-xl hover:from-blue-600 hover:to-emerald-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg shadow-blue-500/25"
-                        >
-                            {loading ? (
-                                <span className="flex items-center justify-center gap-2">
-                                    <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                                    </svg>
-                                    {mode === 'signin' ? 'Signing in...' : 'Creating account...'}
-                                </span>
-                            ) : (
-                                mode === 'signin' ? 'Sign In' : 'Create Account'
-                            )}
-                        </button>
-                    </form>
+                            {/* Confirm Password (Sign Up only) */}
+                            <AnimatePresence mode="wait">
+                                {mode === 'signup' && (
+                                    <motion.div
+                                        initial={{ opacity: 0, height: 0 }}
+                                        animate={{ opacity: 1, height: 'auto' }}
+                                        exit={{ opacity: 0, height: 0 }}
+                                        transition={{ duration: 0.3 }}
+                                        className="group"
+                                    >
+                                        <label className="block text-xs font-medium text-slate-400 mb-2 uppercase tracking-wider">
+                                            Confirm Password
+                                        </label>
+                                        <div className="relative">
+                                            <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500 group-focus-within:text-violet-400 transition-colors" />
+                                            <input
+                                                type={showConfirmPassword ? 'text' : 'password'}
+                                                value={confirmPassword}
+                                                onChange={(e) => setConfirmPassword(e.target.value)}
+                                                required
+                                                placeholder="••••••••"
+                                                className="w-full pl-12 pr-12 py-3.5 bg-slate-800/50 border border-white/10 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 transition-all"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                                                className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors"
+                                            >
+                                                {showConfirmPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                                            </button>
+                                        </div>
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
 
-                    {/* Footer */}
-                    <p className="text-center text-slate-400 text-xs mt-8">
-                        All medical actions are AI-validated and auditable
-                    </p>
-                </div>
-            </div>
+                            {/* Role Selector (Sign In only) */}
+                            <AnimatePresence mode="wait">
+                                {mode === 'signin' && (
+                                    <motion.div
+                                        initial={{ opacity: 0, height: 0 }}
+                                        animate={{ opacity: 1, height: 'auto' }}
+                                        exit={{ opacity: 0, height: 0 }}
+                                        transition={{ duration: 0.3 }}
+                                    >
+                                        <label className="block text-xs font-medium text-slate-400 mb-3 uppercase tracking-wider">
+                                            Login as
+                                        </label>
+                                        <div className="flex gap-3">
+                                            <button
+                                                type="button"
+                                                onClick={() => setSelectedRole('customer')}
+                                                className={`flex-1 py-3.5 px-4 rounded-xl border transition-all duration-300 flex items-center justify-center gap-3 ${
+                                                    selectedRole === 'customer'
+                                                        ? 'border-violet-500/50 bg-violet-500/10 text-white shadow-lg shadow-violet-500/10'
+                                                        : 'border-white/10 bg-slate-800/30 text-slate-400 hover:border-white/20 hover:text-white'
+                                                }`}
+                                            >
+                                                <User className="w-5 h-5" />
+                                                <span className="font-medium">Customer</span>
+                                                {selectedRole === 'customer' && (
+                                                    <motion.div
+                                                        initial={{ scale: 0 }}
+                                                        animate={{ scale: 1 }}
+                                                        className="ml-auto"
+                                                    >
+                                                        <CheckCircle2 className="w-5 h-5 text-violet-400" />
+                                                    </motion.div>
+                                                )}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setSelectedRole('admin')}
+                                                className={`flex-1 py-3.5 px-4 rounded-xl border transition-all duration-300 flex items-center justify-center gap-3 ${
+                                                    selectedRole === 'admin'
+                                                        ? 'border-cyan-500/50 bg-cyan-500/10 text-white shadow-lg shadow-cyan-500/10'
+                                                        : 'border-white/10 bg-slate-800/30 text-slate-400 hover:border-white/20 hover:text-white'
+                                                }`}
+                                            >
+                                                <Shield className="w-5 h-5" />
+                                                <span className="font-medium">Admin</span>
+                                                {selectedRole === 'admin' && (
+                                                    <motion.div
+                                                        initial={{ scale: 0 }}
+                                                        animate={{ scale: 1 }}
+                                                        className="ml-auto"
+                                                    >
+                                                        <CheckCircle2 className="w-5 h-5 text-cyan-400" />
+                                                    </motion.div>
+                                                )}
+                                            </button>
+                                        </div>
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
 
-            {/* Right Panel - Illustration */}
-            <div className="hidden lg:flex flex-1 items-center justify-center bg-gradient-to-br from-blue-500 to-emerald-500 p-12">
-                <div className="max-w-md text-center text-white">
-                    {/* Pharmacy Icons */}
-                    <div className="flex justify-center gap-6 mb-8">
-                        {/* Pill Icon */}
-                        <div className="w-20 h-20 bg-white/20 backdrop-blur rounded-2xl flex items-center justify-center">
-                            <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
-                            </svg>
-                        </div>
-                        {/* Medical Cross */}
-                        <div className="w-20 h-20 bg-white/20 backdrop-blur rounded-2xl flex items-center justify-center">
-                            <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
-                            </svg>
-                        </div>
-                        {/* Shield Check */}
-                        <div className="w-20 h-20 bg-white/20 backdrop-blur rounded-2xl flex items-center justify-center">
-                            <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                            </svg>
+                            {/* Submit Button */}
+                            <motion.button
+                                type="submit"
+                                disabled={loading}
+                                whileHover={{ scale: 1.02 }}
+                                whileTap={{ scale: 0.98 }}
+                                className="w-full py-4 px-6 bg-gradient-to-r from-violet-600 via-fuchsia-500 to-violet-600 bg-[length:200%_100%] text-white font-semibold rounded-xl hover:bg-[length:100%_100%] focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-slate-900 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-500 shadow-xl shadow-violet-500/25 flex items-center justify-center gap-3 mt-8"
+                            >
+                                {loading ? (
+                                    <>
+                                        <Loader2 className="w-5 h-5 animate-spin" />
+                                        <span>{mode === 'signin' ? 'Signing in...' : 'Creating account...'}</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <span>{mode === 'signin' ? 'Sign In' : 'Create Account'}</span>
+                                        <ArrowRight className="w-5 h-5" />
+                                    </>
+                                )}
+                            </motion.button>
+                        </form>
+
+                        {/* Footer */}
+                        <div className="mt-8 pt-6 border-t border-white/5 text-center">
+                            <p className="text-slate-500 text-xs">
+                                Protected by enterprise-grade security
+                            </p>
+                            <div className="flex items-center justify-center gap-4 mt-3">
+                                <div className="flex items-center gap-1.5 text-slate-500 text-xs">
+                                    <Lock className="w-3.5 h-3.5" />
+                                    <span>End-to-end encrypted</span>
+                                </div>
+                                <div className="w-1 h-1 rounded-full bg-slate-600" />
+                                <div className="flex items-center gap-1.5 text-slate-500 text-xs">
+                                    <Shield className="w-3.5 h-3.5" />
+                                    <span>HIPAA compliant</span>
+                                </div>
+                            </div>
                         </div>
                     </div>
-
-                    <h2 className="text-3xl font-bold mb-4">AI-Powered Healthcare</h2>
-                    <p className="text-white/80 text-lg leading-relaxed">
-                        Experience intelligent medication management with our autonomous AI agents.
-                        Safe, compliant, and always available.
-                    </p>
-
-                    {/* Features */}
-                    <div className="mt-10 space-y-4 text-left">
-                        <div className="flex items-center gap-3 bg-white/10 backdrop-blur rounded-xl px-4 py-3">
-                            <svg className="w-5 h-5 text-emerald-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                            </svg>
-                            <span>Smart prescription validation</span>
-                        </div>
-                        <div className="flex items-center gap-3 bg-white/10 backdrop-blur rounded-xl px-4 py-3">
-                            <svg className="w-5 h-5 text-emerald-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                            </svg>
-                            <span>Automated refill reminders</span>
-                        </div>
-                        <div className="flex items-center gap-3 bg-white/10 backdrop-blur rounded-xl px-4 py-3">
-                            <svg className="w-5 h-5 text-emerald-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                            </svg>
-                            <span>LangSmith traced for transparency</span>
-                        </div>
-                    </div>
                 </div>
-            </div>
+
+                {/* Copyright */}
+                <p className="text-center text-slate-600 text-xs mt-8">
+                    © 2026 Your Pharma AI. All rights reserved.
+                </p>
+            </motion.div>
         </div>
     );
 }

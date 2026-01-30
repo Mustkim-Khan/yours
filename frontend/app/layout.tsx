@@ -1,10 +1,10 @@
+import AuthGuard from '@/components/AuthGuard';
+import LayoutWrapper from '@/components/LayoutWrapper';
+import Providers from '@/components/Providers';
+import { AuthProvider } from '@/lib/AuthContext';
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
-import Sidebar from '@/components/Sidebar';
-import Providers from '@/components/Providers';
-import { AuthProvider } from '@/lib/AuthContext';
-import AuthGuard from '@/components/AuthGuard';
 
 const inter = Inter({ subsets: ['latin'] });
 
@@ -19,19 +19,14 @@ export default function RootLayout({
     children: React.ReactNode;
 }) {
     return (
-        <html lang="en">
-            <body className={`${inter.className} min-h-screen flex flex-col bg-gray-50 dark:bg-gray-900 transition-colors duration-300`}>
+        <html lang="en" className="h-full">
+            <body className={`${inter.className} h-full flex flex-col bg-gray-50 dark:bg-gray-900 transition-colors duration-300`}>
                 <AuthProvider>
                     <AuthGuard>
                         <Providers>
-                            <Sidebar />
-                            <main className="pt-16 flex-1 flex flex-col">
+                            <LayoutWrapper>
                                 {children}
-                            </main>
-                            {/* Footer */}
-                            <footer className="text-center py-4 text-sm text-gray-500 border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 transition-colors duration-300">
-                                © 2026 Your Pharma AI. All rights reserved.
-                            </footer>
+                            </LayoutWrapper>
                         </Providers>
                     </AuthGuard>
                 </AuthProvider>

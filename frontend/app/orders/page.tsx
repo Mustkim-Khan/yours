@@ -89,7 +89,7 @@ export default function MyOrdersPage() {
     }
 
     return (
-        <main className="min-h-screen bg-gray-50 dark:bg-gray-900 pt-24 px-4 sm:px-6 pb-12">
+        <main className="min-h-screen bg-gray-50 dark:bg-gray-900 pt-24 px-4 sm:px-6 pb-24">
             <div className="max-w-4xl mx-auto">
                 <header className="mb-8">
                     <h1 className="text-2xl font-bold text-gray-900 dark:text-white">My Orders</h1>

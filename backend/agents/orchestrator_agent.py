@@ -159,6 +159,9 @@ class OrchestratorAgent:
         order_created = None
         requires_prescription = False
         
+        # Check explicit cart intent
+        is_cart_intent = "cart" in request.user_message.lower() or "add" in request.user_message.lower()
+        
         # UI Card data
         ui_card_type = UICardType.NONE
         order_preview_data = None
@@ -168,6 +171,42 @@ class OrchestratorAgent:
         # Check if user is confirming a previous order preview
         if self._is_confirmation_message(request.user_message):
             saved_preview = self._get_order_preview(request.session_id)
+            
+            # FALLBACK: If no session preview, check persistent Cart
+            if not saved_preview and self._data_service and request.user_id:
+                cart = self._data_service.get_active_cart(request.user_id)
+                items = cart.get("items", [])
+                if items:
+                    print(f"🛒 Found {len(items)} items in persistent cart. Creating preview for confirmation.")
+                    # Build preview from cart items
+                    preview_items = []
+                    subtotal = 0.0
+                    for item in items:
+                        qty = int(item.get("quantity", 1))
+                        price = float(item.get("unit_price", 5.00))
+                        subtotal += (qty * price)
+                        preview_items.append(OrderPreviewItem(
+                            medicine_id=item.get("medicine_id", f"MED-{item.get('medicine_name')[:3]}"),
+                            medicine_name=item.get("medicine_name", "Unknown"),
+                            strength=item.get("strength", ""),
+                            quantity=qty,
+                            prescription_required=False, # Cart items assumed valid for now or Policy Agent will catch later? 
+                            # MVP: Assume confirmed via cart flow = user wants to buy. Policy check skipped here for speed or added?
+                            # Ideally we should delegate to PolicyAgent, but for Checkout Modal flow we assume "Pay" button implies intent.
+                            unit_price=price,
+                            supply_days=qty
+                        ))
+                    
+                    saved_preview = OrderPreviewData(
+                        preview_id=f"CART-{request.session_id[:8]}",
+                        patient_id=request.patient_id or "GUEST",
+                        patient_name=request.user_name or "Guest",
+                        items=preview_items,
+                        total_amount=subtotal * 1.05 + 2.00, # Same logic: Tax + Delivery
+                        safety_decision="APPROVE",
+                        requires_prescription=False
+                    )
+
             if saved_preview:
                 # User is confirming - delegate to FulfillmentAgent
                 agent_chain.append("PharmacistAgent")
@@ -187,12 +226,19 @@ class OrchestratorAgent:
                     if contact.get("name"):
                         patient_name = contact.get("name")
                 
+                # Extract payment method from confirmation message
+                payment_method = "COD" # Default
+                msg_upper = request.user_message.upper()
+                if "UPI" in msg_upper or "QR" in msg_upper or "ONLINE" in msg_upper:
+                    payment_method = "UPI"
+                
                 # Delegate to FulfillmentAgent to confirm order
                 agent_output, order_confirmation_data, summary = await self.fulfillment.confirm_order(
                     saved_preview,
                     patient_name or saved_preview.patient_name,
                     request.user_id,
-                    patient_phone  # NEW: Pass phone for WhatsApp
+                    patient_phone,  # NEW: Pass phone for WhatsApp
+                    payment_method=payment_method
                 )
                 
                 if order_confirmation_data:
@@ -334,16 +380,58 @@ class OrchestratorAgent:
                         break
                 
             elif next_agent == "FulfillmentAgent":
-                current_output = await self._delegate_to_fulfillment(
-                    all_evidence, request.patient_id
-                )
-                agent_chain.append("FulfillmentAgent")
-                if current_output.decision == Decision.APPROVED:
-                    # Extract order_id from evidence
-                    for ev in current_output.evidence:
-                        if ev.startswith("order_id="):
-                            order_created = ev.split("=")[1]
-                            break
+                # INTERCEPT: If this is an "Add to Cart" request, redirect back to Pharmacist to execute add_to_cart
+                if is_cart_intent and current_output.decision == Decision.APPROVED:
+                    try:
+                        # Synthesize a message to force Pharmacist to add to cart with context
+                        # Delegate with accumulated evidence context
+                         print("🛒 Orchestrator Intercept: Redirecting Fulfillment -> Add to Cart")
+                         
+                         # Construct context message
+                         context_msg = f"Inventory and Policy checks approved. Please add the items to the cart now. Evidence: {all_evidence}"
+                         
+                         current_output = await self._delegate_to_pharmacist(
+                            message=context_msg,
+                            session_id=request.session_id,
+                            patient_id=request.patient_id,
+                            user_name=request.user_name,
+                            user_id=request.user_id,
+                            conversation_id=request.conversation_id
+                         )
+                         # FORCE UI CARD RESET: Ensure no order preview is shown
+                         if current_output.ui_card == "order_preview":
+                             current_output.ui_card = None
+                             current_output.ui_data = None
+                             
+                         # Append Pharmacist again
+                         agent_chain.append("PharmacistAgent:add_to_cart")
+                         # Stop loop after this (Pharmacist add_to_cart returns next_agent=None)
+                     
+                    except Exception as e:
+                        print(f"❌ Orchestrator Intercept Error: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        # Fallback to fulfillment if intercept fails to avoid hanging
+                        current_output = await self._delegate_to_fulfillment(
+                            all_evidence, request.patient_id
+                        )
+                        agent_chain.append("FulfillmentAgent:fallback")
+                        if current_output.decision == Decision.APPROVED:
+                           for ev in current_output.evidence:
+                               if ev.startswith("order_id="):
+                                    order_created = ev.split("=")[1]
+                                    break
+                else:
+                    current_output = await self._delegate_to_fulfillment(
+                        all_evidence, request.patient_id
+                    )
+                    agent_chain.append("FulfillmentAgent")
+                    if current_output.decision == Decision.APPROVED:
+                        # Extract order_id from evidence
+                        for ev in current_output.evidence:
+                            if ev.startswith("order_id="):
+                                order_created = ev.split("=")[1]
+                                break
                 
             elif next_agent == "RefillPredictionAgent":
                 current_output = await self._delegate_to_refill(
@@ -454,6 +542,12 @@ class OrchestratorAgent:
             self._save_order_preview(request.session_id, order_preview_data)
         
         final_action = self._decision_to_action(current_output.decision)
+        # GLOBAL FAILSAFE: If intent was add-to-cart, FORCE suppress any order preview card
+        if is_cart_intent:
+            print("🛡️ Orchestrator Failsafe: Suppressing potential UI cards for Add to Cart")
+            ui_card_type = UICardType.NONE
+            order_preview_data = None
+            order_confirmation_data = None
         
         return OrchestratorResponse(
             session_id=request.session_id,

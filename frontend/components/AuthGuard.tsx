@@ -11,9 +11,9 @@
 
 'use client';
 
-import { useEffect } from 'react';
-import { useRouter, usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/AuthContext';
+import { usePathname, useRouter } from 'next/navigation';
+import { useEffect } from 'react';
 
 interface AuthGuardProps {
     children: React.ReactNode;
@@ -30,9 +30,11 @@ export default function AuthGuard({ children }: AuthGuardProps) {
 
         // Public routes that don't require auth
         const isLoginPage = pathname === '/login';
+        const isLandingPage = pathname === '/landing';
+        const isPublicRoute = isLoginPage || isLandingPage;
 
-        // If not authenticated and not on login page, redirect to login
-        if (!user && !isLoginPage) {
+        // If not authenticated and not on a public route, redirect to login
+        if (!user && !isPublicRoute) {
             router.push('/login');
             return;
         }
@@ -73,7 +75,13 @@ export default function AuthGuard({ children }: AuthGuardProps) {
         }
     }, [user, loading, userRole, router, pathname]);
 
-    // Show loading spinner while checking auth
+    // Public routes bypass ALL auth checks (no loading, no redirects)
+    // This must come FIRST to ensure landing page shows immediately
+    if (pathname === '/login' || pathname === '/landing') {
+        return <>{children}</>;
+    }
+
+    // Show loading spinner while checking auth (only for protected routes)
     if (loading) {
         return (
             <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-blue-50 to-emerald-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
@@ -83,11 +91,6 @@ export default function AuthGuard({ children }: AuthGuardProps) {
                 </div>
             </div>
         );
-    }
-
-    // If on login page, show children regardless of auth state
-    if (pathname === '/login') {
-        return <>{children}</>;
     }
 
     // If not authenticated, show redirect message

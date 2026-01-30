@@ -175,8 +175,8 @@ All agents emit standardized output:
 }
 
 Model assignments:
-- PharmacistAgent:       gpt-5-mini
-- InventoryAgent:        gpt-5.2 (precision)
+- PharmacistAgent:       gpt-5.2 (precision)
+- InventoryAgent:        gpt-5-mini
 - PolicyAgent:           gpt-5.2 (precision)
 - FulfillmentAgent:      gpt-5-mini
 - RefillPredictionAgent: gpt-5-mini

@@ -405,6 +405,17 @@ class DataService:
             print(f"Error getting user contact for {user_id}: {e}")
             return {"name": None, "phone": None}
 
+    def get_active_cart(self, user_id: str) -> Dict[str, Any]:
+        """Get active cart for user via CartService logic"""
+        if not self.db or not user_id:
+            return {"items": []}
+        try:
+            doc = self.db.collection("users").document(user_id).collection("cart").document("active").get()
+            return doc.to_dict() if doc.exists else {"items": []}
+        except Exception as e:
+            print(f"Error getting cart: {e}")
+            return {"items": []}
+
 
 # Global instance
 data_service = DataService()

@@ -739,6 +739,73 @@ async def get_patient_history(patient_id: str):
     }
 
 
+# ============ EXPLAIN MY MEDICINE ENDPOINT ============
+
+class MedicineExplainRequest(BaseModel):
+    """Request for medicine explanation"""
+    medicine_name: str
+    strength: str
+    quantity: int
+    frequency: Optional[str] = None
+
+
+class MedicineExplainResponse(BaseModel):
+    """Response with medicine explanation"""
+    medicine_name: str
+    strength: str
+    purpose: str
+    onset: str
+    common_mistakes: str
+    precautions: str
+    closing: str
+    generated: bool = True
+
+
+@app.post("/medicine/explain", response_model=MedicineExplainResponse)
+async def explain_medicine(request: MedicineExplainRequest):
+    """
+    Generate AI-powered medicine explanation.
+    
+    This is a READ-ONLY explainability layer that helps patients
+    understand their medicine without providing medical advice.
+    
+    Appears AFTER order confirmation - does NOT affect any decisions.
+    """
+    from services.medicine_explainer import generate_medicine_explanation
+    
+    try:
+        explanation = await generate_medicine_explanation(
+            medicine_name=request.medicine_name,
+            strength=request.strength,
+            quantity=request.quantity,
+            frequency=request.frequency
+        )
+        
+        return MedicineExplainResponse(
+            medicine_name=explanation.get("medicine_name", request.medicine_name),
+            strength=explanation.get("strength", request.strength),
+            purpose=explanation.get("purpose", ""),
+            onset=explanation.get("onset", ""),
+            common_mistakes=explanation.get("common_mistakes", ""),
+            precautions=explanation.get("precautions", ""),
+            closing=explanation.get("closing", ""),
+            generated=explanation.get("generated", True)
+        )
+        
+    except Exception as e:
+        # Return safe fallback on error
+        return MedicineExplainResponse(
+            medicine_name=request.medicine_name,
+            strength=request.strength,
+            purpose=f"{request.medicine_name} has been prescribed by your doctor based on your specific health needs.",
+            onset="Effects typically begin within a few hours to days, depending on the individual.",
+            common_mistakes="• Don't skip doses\n• Don't stop without consulting your doctor\n• Don't double up if you miss a dose",
+            precautions="• Take as directed\n• Store properly\n• Keep out of reach of children",
+            closing="If you have any questions, please ask your pharmacist or doctor.",
+            generated=False
+        )
+
+
 # ============ INVENTORY ENDPOINTS (Admin Dashboard) ============
 
 @app.get("/inventory/stats")
@@ -821,6 +888,349 @@ async def get_order_details(order_id: str, current_user: Optional[dict] = Depend
         order_data["orderedAt"] = order_data["orderedAt"].isoformat()
         
     return order_data
+
+
+# ============ MEDICINE CABINET ENDPOINTS ============
+
+from fastapi import UploadFile, File
+import base64
+import uuid
+
+class CabinetMedicineRequest(BaseModel):
+    """Request body for adding medicine to cabinet"""
+    name: str
+    strength: str
+    form: str
+    expiry_date: Optional[str] = None
+    expiry_status: str = "safe"
+    quantity: int = 1
+    ai_confidence: float = 0.0
+    manufacturer: Optional[str] = None
+
+
+@app.post("/api/cabinet/scan")
+async def scan_medicine(
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user)
+):
+    """
+    Scan a medicine image using GPT-5.2 Vision.
+    Returns extracted medicine details with the uploaded image.
+    """
+    from services.medicine_scanner_service import scan_medicine_image
+    
+    # Read and encode the image
+    contents = await file.read()
+    image_base64 = base64.b64encode(contents).decode("utf-8")
+    
+    # Scan with AI
+    result = await scan_medicine_image(image_base64)
+    
+    return {
+        "success": result.success,
+        "is_medicine": result.is_medicine,
+        "medicine": {
+            "name": result.name,
+            "strength": result.strength,
+            "form": result.form,
+            "expiry_date": result.expiry_date,
+            "expiry_status": result.expiry_status,
+            "manufacturer": result.manufacturer,
+            "ai_confidence": result.ai_confidence,
+            "image_base64": result.image_base64  # Include the uploaded image
+        } if result.success else None,
+        "error": result.error_message
+    }
+
+
+@app.get("/api/cabinet/{user_id}")
+async def get_cabinet_medicines(
+    user_id: str,
+    user: dict = Depends(get_current_user)
+):
+    """Get all medicines in user's cabinet from Firestore"""
+    # Security check
+    if user["uid"] != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    db = get_db()
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not available")
+    
+    try:
+        cabinet_ref = db.collection("users").document(user_id).collection("cabinet")
+        docs = cabinet_ref.stream()
+        
+        medicines = []
+        for doc in docs:
+            data = doc.to_dict()
+            data["id"] = doc.id
+            medicines.append(data)
+        
+        return {"medicines": medicines}
+    except Exception as e:
+        print(f"Error fetching cabinet: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/cabinet/{user_id}")
+async def add_to_cabinet(
+    user_id: str,
+    medicine: CabinetMedicineRequest,
+    user: dict = Depends(get_current_user)
+):
+    """Add a medicine to user's cabinet"""
+    # Security check
+    if user["uid"] != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    db = get_db()
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not available")
+    
+    try:
+        medicine_id = f"med-{uuid.uuid4().hex[:8]}"
+        cabinet_ref = db.collection("users").document(user_id).collection("cabinet").document(medicine_id)
+        
+        medicine_data = {
+            "name": medicine.name,
+            "strength": medicine.strength,
+            "form": medicine.form,
+            "expiryDate": medicine.expiry_date,
+            "expiryStatus": medicine.expiry_status,
+            "quantity": medicine.quantity,
+            "estimatedRemaining": medicine.quantity,
+            "aiConfidence": medicine.ai_confidence,
+            "manufacturer": medicine.manufacturer,
+            "addedDate": datetime.now().isoformat(),
+            "addedVia": "ai_scan"
+        }
+        
+        cabinet_ref.set(medicine_data)
+        print(f"✅ Added medicine {medicine.name} to cabinet for user {user_id}")
+        
+        return {
+            "success": True,
+            "medicine_id": medicine_id,
+            "medicine": {**medicine_data, "id": medicine_id}
+        }
+    except Exception as e:
+        print(f"Error adding to cabinet: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/cabinet/{user_id}/{medicine_id}")
+async def remove_from_cabinet(
+    user_id: str,
+    medicine_id: str,
+    user: dict = Depends(get_current_user)
+):
+    """Remove a medicine from user's cabinet"""
+    # Security check
+    if user["uid"] != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    db = get_db()
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not available")
+    
+    try:
+        cabinet_ref = db.collection("users").document(user_id).collection("cabinet").document(medicine_id)
+        cabinet_ref.delete()
+        print(f"🗑️ Removed medicine {medicine_id} from cabinet for user {user_id}")
+        
+        return {"success": True, "medicine_id": medicine_id}
+    except Exception as e:
+        print(f"Error removing from cabinet: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ REALTIME VOICE WEBSOCKET ENDPOINT ============
+
+from fastapi import WebSocket, WebSocketDisconnect
+
+@app.websocket("/ws/realtime-voice/{user_id}")
+async def realtime_voice_websocket(websocket: WebSocket, user_id: str):
+    """
+    WebSocket endpoint for real-time voice interactions.
+    
+    Uses GPT-4o-realtime-preview with native function calling for:
+    - Medicine search and ordering
+    - Cart management
+    - Order confirmation
+    - Customer history lookup
+    
+    Protocol:
+    - Client sends: Audio chunks (binary) or JSON control messages
+    - Server sends: Audio chunks (binary) or JSON UI actions
+    
+    JSON Control Messages:
+    - {"type": "start", "conversation_id": "..."} - Start session
+    - {"type": "audio_end"} - Signal end of audio input
+    - {"type": "cancel"} - Cancel current response
+    - {"type": "close"} - Close session
+    
+    JSON UI Actions (from server):
+    - {"type": "ui_action", "action": "show_order_preview", "data": {...}}
+    - {"type": "ui_action", "action": "update_cart", "data": {...}}
+    - {"type": "ui_action", "action": "order_confirmed", "data": {...}}
+    """
+    import uuid
+    import json
+    import asyncio
+    
+    from services.realtime_voice_service import (
+        realtime_voice_service,
+        create_voice_session,
+        close_voice_session
+    )
+    from utils.realtime_tracing import (
+        start_voice_trace,
+        end_voice_trace,
+        log_voice_tool
+    )
+    
+    await websocket.accept()
+    session_id = f"voice-{uuid.uuid4().hex[:8]}"
+    session = None
+    trace_id = None
+    
+    try:
+        print(f"🎤 WebSocket connected: {session_id} for user {user_id}")
+        
+        # Wait for start message with optional conversation_id
+        start_msg = await websocket.receive_text()
+        start_data = json.loads(start_msg)
+        
+        if start_data.get("type") != "start":
+            await websocket.send_json({"type": "error", "message": "Expected start message"})
+            await websocket.close()
+            return
+        
+        conversation_id = start_data.get("conversation_id")
+        
+        # Start LangSmith trace
+        trace_id = start_voice_trace(session_id, user_id, conversation_id)
+        
+        # Create and connect session
+        session = await create_voice_session(session_id, user_id, conversation_id)
+        if not session:
+            await websocket.send_json({"type": "error", "message": "Failed to connect to OpenAI"})
+            await websocket.close()
+            return
+        
+        # Inject data service
+        realtime_voice_service.set_data_service(data_service)
+        
+        # Send ready signal
+        await websocket.send_json({
+            "type": "ready",
+            "session_id": session_id,
+            "trace_id": trace_id
+        })
+        
+        # Start background task to receive from OpenAI and forward to client
+        async def forward_openai_events():
+            try:
+                async for event in realtime_voice_service.receive_events(session_id):
+                    event_type = event.get("type", "")
+                    
+                    if event_type == "audio":
+                        # Forward audio as binary
+                        import base64
+                        audio_bytes = base64.b64decode(event.get("data", ""))
+                        await websocket.send_bytes(audio_bytes)
+                    
+                    elif event_type == "audio_done":
+                        await websocket.send_json({"type": "audio_done"})
+                    
+                    elif event_type == "ui_action":
+                        # Forward UI action to frontend
+                        await websocket.send_json({
+                            "type": "ui_action",
+                            **event.get("action", {})
+                        })
+                    
+                    elif event_type == "response_done":
+                        await websocket.send_json({"type": "response_done"})
+                    
+                    elif event_type == "error":
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": event.get("message", "Unknown error")
+                        })
+                    
+                    elif event_type == "disconnected":
+                        break
+                        
+            except Exception as e:
+                print(f"❌ Error forwarding OpenAI events: {e}")
+        
+        # Start forwarding task
+        forward_task = asyncio.create_task(forward_openai_events())
+        
+        # Main loop: receive from client
+        try:
+            while True:
+                message = await websocket.receive()
+                
+                if message.get("type") == "websocket.disconnect":
+                    break
+                
+                if "bytes" in message:
+                    # Audio chunk from client
+                    audio_data = message["bytes"]
+                    await realtime_voice_service.send_audio(session_id, audio_data)
+                
+                elif "text" in message:
+                    # Control message
+                    data = json.loads(message["text"])
+                    msg_type = data.get("type", "")
+                    
+                    if msg_type == "audio_end":
+                        # With server VAD, OpenAI auto-detects speech end and responds
+                        # No need to manually commit - just log for debugging
+                        print(f"📤 Received audio_end signal from client (VAD handles response)")
+                    
+                    elif msg_type == "cancel":
+                        # Cancel current response (would need API support)
+                        pass
+                    
+                    elif msg_type == "close":
+                        break
+                        
+        except WebSocketDisconnect:
+            print(f"📴 WebSocket disconnected: {session_id}")
+        finally:
+            forward_task.cancel()
+            try:
+                await forward_task
+            except asyncio.CancelledError:
+                pass
+    
+    except Exception as e:
+        print(f"❌ WebSocket error: {e}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except:
+            pass
+    
+    finally:
+        # Cleanup
+        if session:
+            tools_invoked = session.tools_invoked if session else []
+            await close_voice_session(session_id)
+            
+            # End trace
+            if trace_id:
+                end_voice_trace(session_id, "success", tools_invoked)
+        
+        try:
+            await websocket.close()
+        except:
+            pass
+        
+        print(f"🎤 Session {session_id} closed")
 
 
 # ============ RUN SERVER ============

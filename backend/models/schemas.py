@@ -60,6 +60,9 @@ class Order(BaseModel):
     status: OrderStatus
     created_at: datetime
     total_amount: float = 0.0
+    payment_method: Optional[str] = None
+    payment_status: Optional[str] = None
+    transaction_id: Optional[str] = None
 
 
 # ============ Standardized Agent Output ============
@@ -178,7 +181,11 @@ class OrderConfirmationData(BaseModel):
     requires_prescription: bool = False
     status: str = "CONFIRMED"
     created_at: str
+    status: str = "CONFIRMED"
+    created_at: str
     estimated_delivery: Optional[str] = None
+    payment_method: Optional[str] = None
+    payment_status: Optional[str] = None
 
 
 class PrescriptionUploadData(BaseModel):

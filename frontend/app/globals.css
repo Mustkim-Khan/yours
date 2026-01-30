@@ -8,13 +8,17 @@
   --background-end-rgb: 241, 245, 249;
 }
 
+.dark {
+  --foreground-rgb: 248, 250, 252;
+  --background-start-rgb: 17, 24, 39;
+  --background-end-rgb: 3, 7, 18;
+}
+
 body {
   color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-      to bottom,
+  background: linear-gradient(to bottom,
       rgb(var(--background-start-rgb)),
-      rgb(var(--background-end-rgb))
-    );
+      rgb(var(--background-end-rgb)));
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   min-height: 100vh;
 }
@@ -68,6 +72,7 @@ body {
     opacity: 0;
     transform: translateY(10px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -80,9 +85,13 @@ body {
 
 /* Typing indicator */
 @keyframes typing {
-  0%, 60%, 100% {
+
+  0%,
+  60%,
+  100% {
     transform: translateY(0);
   }
+
   30% {
     transform: translateY(-5px);
   }
@@ -102,9 +111,12 @@ body {
 
 /* Voice wave animation */
 @keyframes wave {
-  0%, 100% {
+
+  0%,
+  100% {
     transform: scaleY(1);
   }
+
   50% {
     transform: scaleY(2);
   }
@@ -128,9 +140,12 @@ body {
 
 /* Pulse animation for status indicators */
 @keyframes statusPulse {
-  0%, 100% {
+
+  0%,
+  100% {
     opacity: 1;
   }
+
   50% {
     opacity: 0.5;
   }
@@ -152,24 +167,19 @@ body {
 
 /* Button styles */
 .btn-primary {
-  @apply bg-gradient-to-r from-primary-500 to-primary-600 text-white px-4 py-2 rounded-lg font-medium 
-         hover:from-primary-600 hover:to-primary-700 transition-all duration-200 
-         shadow-md hover:shadow-lg active:scale-95;
+  @apply bg-gradient-to-r from-primary-500 to-primary-600 text-white px-4 py-2 rounded-lg font-medium hover:from-primary-600 hover:to-primary-700 transition-all duration-200 shadow-md hover:shadow-lg active:scale-95;
 }
 
 .btn-secondary {
-  @apply bg-white text-gray-700 px-4 py-2 rounded-lg font-medium border border-gray-200
-         hover:bg-gray-50 transition-all duration-200 shadow-sm hover:shadow;
+  @apply bg-white text-gray-700 px-4 py-2 rounded-lg font-medium border border-gray-200 hover:bg-gray-50 transition-all duration-200 shadow-sm hover:shadow;
 }
 
 .btn-success {
-  @apply bg-gradient-to-r from-success-500 to-success-600 text-white px-4 py-2 rounded-lg font-medium
-         hover:from-success-600 hover:to-green-600 transition-all duration-200 shadow-md hover:shadow-lg;
+  @apply bg-gradient-to-r from-success-500 to-success-600 text-white px-4 py-2 rounded-lg font-medium hover:from-success-600 hover:to-green-600 transition-all duration-200 shadow-md hover:shadow-lg;
 }
 
 .btn-danger {
-  @apply bg-gradient-to-r from-danger-500 to-danger-600 text-white px-4 py-2 rounded-lg font-medium
-         hover:from-danger-600 hover:to-red-600 transition-all duration-200 shadow-md hover:shadow-lg;
+  @apply bg-gradient-to-r from-danger-500 to-danger-600 text-white px-4 py-2 rounded-lg font-medium hover:from-danger-600 hover:to-red-600 transition-all duration-200 shadow-md hover:shadow-lg;
 }
 
 /* Badge styles */
@@ -195,9 +205,7 @@ body {
 
 /* Input styles */
 .input-field {
-  @apply w-full px-4 py-3 rounded-lg border border-gray-200 bg-white
-         focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent
-         transition-all duration-200 placeholder:text-gray-400;
+  @apply w-full px-4 py-3 rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all duration-200 placeholder:text-gray-400;
 }
 
 /* Table styles */
@@ -211,4 +219,124 @@ body {
 
 .table-cell {
   @apply px-6 py-4 whitespace-nowrap text-sm;
+}
+
+/* ============ Premium UI Component Styles ============ */
+
+/* Perspective utilities for 3D transforms */
+.perspective-1000 {
+  perspective: 1000px;
+}
+
+.perspective-2000 {
+  perspective: 2000px;
+}
+
+.preserve-3d {
+  transform-style: preserve-3d;
+}
+
+/* Enhanced glassmorphism */
+.glass-premium {
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.glass-premium-dark {
+  background: rgba(15, 23, 42, 0.8);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Mesh gradient animation */
+@keyframes meshFloat {
+
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+
+  25% {
+    transform: translate(50px, 25px) rotate(90deg);
+  }
+
+  50% {
+    transform: translate(25px, 50px) rotate(180deg);
+  }
+
+  75% {
+    transform: translate(-25px, 25px) rotate(270deg);
+  }
+}
+
+.mesh-blob {
+  animation: meshFloat 15s ease-in-out infinite;
+}
+
+/* Holographic shimmer effect */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.holographic-shimmer {
+  background: linear-gradient(90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.1) 50%,
+      transparent 100%);
+  background-size: 200% 100%;
+  animation: shimmer 3s ease-in-out infinite;
+}
+
+/* Glow effects */
+.glow-indigo {
+  box-shadow: 0 0 20px rgba(99, 102, 241, 0.4),
+    0 0 40px rgba(99, 102, 241, 0.2);
+}
+
+.glow-purple {
+  box-shadow: 0 0 20px rgba(147, 51, 234, 0.4),
+    0 0 40px rgba(147, 51, 234, 0.2);
+}
+
+.glow-emerald {
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.4),
+    0 0 40px rgba(16, 185, 129, 0.2);
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+
+  .voice-wave,
+  .mesh-blob,
+  .holographic-shimmer,
+  .status-pulse,
+  .typing-dot {
+    animation: none !important;
+  }
+
+  .card-hover:hover {
+    transform: none;
+  }
+}
+
+/* Dark mode scrollbar */
+.dark ::-webkit-scrollbar-track {
+  background: #1e293b;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: #475569;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
 }

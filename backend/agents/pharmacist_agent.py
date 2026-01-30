@@ -28,6 +28,16 @@ TEMPERATURE = 0.1
 SYSTEM_PROMPT = """You are PharmacistAgent, a professional AI pharmacy assistant in an autonomous pharmacy system.
 
 ========================
+MULTILINGUAL SUPPORT (CRITICAL)
+========================
+- DETECT the language the user is typing in (Hindi, Spanish, French, Arabic, etc.)
+- ALWAYS respond in the SAME language the user uses
+- If user writes in Hindi, respond in Hindi
+- If user writes in English, respond in English
+- If user mixes languages (Hinglish), respond in the same mix
+- Maintain professional pharmacy terminology in any language
+
+========================
 RESPONSE FORMAT
 ========================
 You MUST respond with valid JSON in this exact structure:
@@ -36,11 +46,13 @@ You MUST respond with valid JSON in this exact structure:
   "params": { ... tool parameters ... }
 }
 
+
 Available actions:
 - emit_decision: Respond to user queries
-- check_inventory: Check medicine availability
+- check_inventory: Check medicine availability (before adding to cart)
+- add_to_cart: Add medicine to persistent cart (AFTER inventory check)
 - check_policy: Check prescription requirements
-- show_order_preview: Display order preview card
+- show_order_preview: Display order preview card (Checkout flow)
 - show_order_confirmation: Display order confirmation
 - show_prescription_upload: Request prescription upload
 - check_refills: Check refill predictions
@@ -136,15 +148,16 @@ ORDER FLOW (MANDATORY SEQUENCE)
 CRITICAL: For any medicine order, you MUST follow this EXACT sequence:
 1. User requests medicine → Check if QUANTITY is provided
 2. IF QUANTITY IS MISSING → Ask "How many tablets/units of [medicine] would you like to order?"
-   - DO NOT proceed to check_inventory until quantity is confirmed
-   - DO NOT assume a default quantity
 3. Once medicine name AND quantity are confirmed → call check_inventory
-4. InventoryAgent will route to PolicyAgent
-5. PolicyAgent will route to FulfillmentAgent
-6. Order preview/confirmation happens ONLY after full chain completes
+4. If In Stock:
+   - IF user explicitly said "add to cart" → call add_to_cart IMMEDIATELY.
+   - IF user just said "I want [medicine]" → ask "Would you like to add this to your cart?" (emit_decision)
+5. User says "Checkout" → show_order_preview (triggers Checkout Flow)
 
-QUANTITY IS MANDATORY: Never proceed without explicit quantity from user.
-NEVER skip to show_order_preview directly. ALWAYS start with check_inventory after quantity is confirmed.
+QUANTITY IS MANDATORY: Never separate medicine from quantity.
+NEVER skip to add_to_cart without checking inventory first (simulated).
+CRITICAL: If the user says "ADD TO CART", you must OUTPUT action: "add_to_cart". DO NOT output "show_order_preview".
+CRITICAL: When adding to cart, DO NOT emit a "show_order_preview" card. Just confirm addition.
 
 ========================
 CONFIRM_ORDER HANDLING (CRITICAL)
@@ -196,6 +209,9 @@ show_order_confirmation:
 
 check_policy:
 - items: [{medicine_name, quantity}]
+
+add_to_cart:
+- medicine_name, quantity, dosage, form, unit_price
 
 check_refills:
 - patient_id
@@ -328,7 +344,8 @@ class PharmacistAgent:
         agent_output = await self._execute_action(
             action_data, 
             patient_id or "GUEST", 
-            patient_name or "Guest"
+            patient_name or "Guest",
+            user_id
         )
         
         # Update history
@@ -344,7 +361,8 @@ class PharmacistAgent:
         self, 
         action_data: dict, 
         patient_id: str,
-        patient_name: str
+        patient_name: str,
+        user_id: Optional[str] = None
     ) -> AgentOutput:
         """Execute the action specified by the LLM and return AgentOutput."""
         action = action_data.get("action", "emit_decision")
@@ -367,6 +385,9 @@ class PharmacistAgent:
         
         elif action == "show_prescription_upload":
             return self._show_prescription_upload(params)
+
+        elif action == "add_to_cart":
+            return self._add_to_cart(params, user_id)
         
         elif action == "check_refills":
             return self._check_refills(params, patient_id)
@@ -596,6 +617,56 @@ class PharmacistAgent:
                 "message": msg
             }
         )
+
+    def _add_to_cart(self, params: dict, user_id: Optional[str]) -> AgentOutput:
+        """Add item to persistent backend cart."""
+        if not user_id:
+            return AgentOutput(
+                agent=self.agent_name,
+                decision=Decision.REJECTED,
+                reason="Authentication required",
+                evidence=[],
+                message="I need to know who you are to add items to your cart. Please log in.",
+                next_agent=None
+            )
+            
+        medicine_name = params.get("medicine_name", "")
+        quantity = int(params.get("quantity", 1))
+        # Default price if not provided (should ideally come from inventory check context)
+        unit_price = float(params.get("unit_price", 5.00))
+        
+        try:
+            from services.cart_service import cart_service
+            success = cart_service.add_item(user_id, params)
+            
+            if success:
+                return AgentOutput(
+                    agent=self.agent_name,
+                    decision=Decision.APPROVED,
+                    reason=f"Added {quantity} {medicine_name} to cart",
+                    evidence=[f"item={medicine_name}", f"qty={quantity}", "action=add_to_cart"],
+                    message=f"I've added {quantity} {medicine_name} to your cart. 🛒\nDisplaying cart checkout options.",
+                    next_agent=None,
+                    # Trigger UI update if needed, or just let user ask for checkout
+                )
+            else:
+                return AgentOutput(
+                    agent=self.agent_name,
+                    decision=Decision.REJECTED,
+                    reason="Database error adding to cart",
+                    evidence=[],
+                    message="I had trouble adding that to your cart. Please try again.",
+                    next_agent=None
+                )
+        except ImportError:
+             return AgentOutput(
+                agent=self.agent_name,
+                decision=Decision.REJECTED,
+                reason="CartService not found",
+                evidence=[],
+                message="System error: Cart service unavailable.",
+                next_agent=None
+            )
 
     def _check_refills(self, params: dict, patient_id: str) -> AgentOutput:
         """Request refill predictions from RefillPredictionAgent."""

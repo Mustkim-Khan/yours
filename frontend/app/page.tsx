@@ -1,9 +1,14 @@
 'use client';
 
+import CartDrawer from '@/components/CartDrawer';
+import CheckoutModal from '@/components/CheckoutModal';
+import ExplainMedicineCard from '@/components/ExplainMedicineCard';
 import PrescriptionUploadCard from '@/components/PrescriptionUploadCard';
+import { OrderCelebration, VoiceWave } from '@/components/ui';
+import RealtimeVoiceButton from '@/components/ui/RealtimeVoiceButton';
 import { useAuth } from '@/lib/AuthContext';
-import { getConversationEntities, getOrCreateConversation, loadMessages, saveMessage, updateConversationEntities } from '@/lib/firestoreService';
-import { ChevronRight, Clock, Loader2, Mic, Paperclip, Send, Settings, Truck, User, Volume2, X } from 'lucide-react';
+import { createNewConversation, deleteConversation, getArchivedConversations, getConversationEntities, getOrCreateConversation, loadMessages, saveMessage, subscribeToCart, updateConversationEntities } from '@/lib/firestoreService';
+import { ChevronRight, Clock, Loader2, Mic, Paperclip, Send, Settings, Trash2, Truck, User, Volume2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
 interface Patient {
@@ -53,11 +58,29 @@ export default function ChatPage() {
     const [prescriptionVerified, setPrescriptionVerified] = useState(false); // Track if prescription is verified
     const [conversationId, setConversationId] = useState<string | null>(null); // Firestore conversation ID
     const [pendingPillImage, setPendingPillImage] = useState<{file: File, base64: string} | null>(null); // Pending pill image for identification
+    
+    // Cart State
+    const [isCartOpen, setIsCartOpen] = useState(false);
+    const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
+    const [cartItems, setCartItems] = useState<any[]>([]);
+
+    // Archive State
+    const [isArchiveExpanded, setIsArchiveExpanded] = useState(true);
+    const [archivedConversations, setArchivedConversations] = useState<{
+        id: string;
+        title: string;
+        lastMessagePreview: string;
+        lastMessageAt: Date;
+    }[]>([]);
+    const [isLoadingArchive, setIsLoadingArchive] = useState(false);
+    const [orderCelebrationStatus, setOrderCelebrationStatus] = useState<'PENDING' | 'CONFIRMED' | 'CANCELLED' | null>(null);
+
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
     const pillImageInputRef = useRef<HTMLInputElement>(null);  // Pill identification image input
     const prescriptionCalledRef = useRef<Set<string>>(new Set()); // Track which messages have had prescription API called
+    const deletedConversationIdsRef = useRef<Set<string>>(new Set()); // Track deleted conversation IDs to filter out
 
     // Get authenticated user and name
     const { user, userName, idToken } = useAuth();
@@ -90,6 +113,71 @@ export default function ChatPage() {
             prescriptionCalledRef.current.clear();
         }
     }, [selectedPatient?.patient_id, user?.uid]);
+
+    // Cart Subscription
+    useEffect(() => {
+        if (user?.uid) {
+            const unsubscribe = subscribeToCart(user.uid, (data) => {
+                setCartItems(data.items || []);
+            });
+            return () => unsubscribe();
+        }
+    }, [user?.uid]);
+
+    // Load archived conversations when user logs in
+    useEffect(() => {
+        const loadArchive = async () => {
+            if (!user?.uid) {
+                setArchivedConversations([]);
+                return;
+            }
+            
+            setIsLoadingArchive(true);
+            try {
+                const archived = await getArchivedConversations(user.uid);
+                console.log('[Archive Load] Fetched from Firestore:', archived.map(c => c.id));
+                console.log('[Archive Load] Deleted IDs to filter:', Array.from(deletedConversationIdsRef.current));
+                
+                // Filter out any deleted conversations that might come back due to eventual consistency
+                const filtered = archived.filter(c => !deletedConversationIdsRef.current.has(c.id));
+                console.log('[Archive Load] After filtering:', filtered.map(c => c.id));
+                
+                setArchivedConversations(filtered);
+            } catch (err) {
+                console.error('[Archive] Failed to load:', err);
+            } finally {
+                setIsLoadingArchive(false);
+            }
+        };
+        
+        loadArchive();
+    }, [user?.uid]);
+
+    // Refresh archive when conversation changes (to update titles/previews)
+    useEffect(() => {
+        const refreshArchive = async () => {
+            if (!user?.uid) return;
+            
+            // Get current deleted IDs before async operation
+            const deletedIds = new Set(deletedConversationIdsRef.current);
+            console.log('[Archive Refresh] Deleted IDs to filter:', Array.from(deletedIds));
+            
+            // Small delay to allow Firestore writes to complete
+            await new Promise(r => setTimeout(r, 500));
+            const archived = await getArchivedConversations(user.uid);
+            console.log('[Archive Refresh] Fetched from Firestore:', archived.map(c => c.id));
+            
+            // Filter out any deleted conversations that might come back due to eventual consistency
+            const filtered = archived.filter(c => !deletedIds.has(c.id) && !deletedConversationIdsRef.current.has(c.id));
+            console.log('[Archive Refresh] After filtering:', filtered.map(c => c.id));
+            
+            setArchivedConversations(filtered);
+        };
+        
+        if (conversationId && messages.length > 0) {
+            refreshArchive();
+        }
+    }, [conversationId, messages.length, user?.uid]);
 
     // Load conversation history from Firestore
     const loadConversationHistory = async (userId: string, patientId: string) => {
@@ -159,8 +247,17 @@ export default function ChatPage() {
         const handleSendMessage = (event: CustomEvent<string>) => {
             sendMessage(event.detail);
         };
+        const handleOpenCart = () => {
+             setIsCartOpen(true);
+        };
+
         document.addEventListener('send-message', handleSendMessage as EventListener);
-        return () => document.removeEventListener('send-message', handleSendMessage as EventListener);
+        document.addEventListener('open-cart', handleOpenCart);
+        
+        return () => {
+            document.removeEventListener('send-message', handleSendMessage as EventListener);
+            document.removeEventListener('open-cart', handleOpenCart);
+        };
     }, [selectedPatient, isLoading]); // Re-bind when deps change
 
     const scrollToBottom = () => {
@@ -253,7 +350,7 @@ export default function ChatPage() {
                 extractedEntities: data.extracted_entities, // We store this in metadata
                 safetyResult: data.safety_result,
                 orderPreview: data.order_preview,
-                order: data.order,
+                order: data.order_confirmation, // Backend sends order_confirmation
                 traceUrl: data.trace_url,
                 aiAnnotation: data.ai_annotation,
                 badges: data.badges,
@@ -265,7 +362,7 @@ export default function ChatPage() {
 
             // Save assistant message to Firestore with RICH METADATA
             if (conversationId) {
-                const messageType = data.order ? 'order_summary' : 'chat';
+                const messageType = data.order_confirmation ? 'order_summary' : 'chat';
 
                 // Construct metadata strictly for UI reconstruction
                 // Firestore throws if any value is 'undefined', so we must default to null
@@ -273,7 +370,7 @@ export default function ChatPage() {
                     extractedEntities: data.extracted_entities || null,
                     safetyResult: data.safety_result || null,
                     orderPreview: data.order_preview || null,
-                    order: data.order || null,
+                    order: data.order_confirmation || null, // Backend sends order_confirmation
                     traceUrl: data.trace_url || null,
                     aiAnnotation: data.ai_annotation || null,
                     badges: data.badges || null,
@@ -332,6 +429,11 @@ export default function ChatPage() {
                     .catch(err => console.error('[Firestore] Failed to persist entities:', err));
             }
             // 4. Otherwise, keep existing entities (Propagates persistence)
+
+            // Trigger Order Celebration when order is confirmed
+            if (data.order_confirmation) {
+                setOrderCelebrationStatus('CONFIRMED');
+            }
 
             if (data.trace_url) {
                 setLatestTraceUrl(data.trace_url);
@@ -582,6 +684,11 @@ export default function ChatPage() {
 
     return (
         <div className="flex flex-1 h-full min-h-0 overflow-hidden">
+            {/* Order Celebration Confetti */}
+            <OrderCelebration 
+                orderStatus={orderCelebrationStatus} 
+                onComplete={() => setOrderCelebrationStatus(null)} 
+            />
             {/* Left Panel - Patient Context */}
             <aside className="w-80 bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800 flex flex-col overflow-y-auto transition-colors duration-300">
                 {/* Patient Context Section */}
@@ -658,14 +765,15 @@ export default function ChatPage() {
                     </div>
                 </div>
 
-
             </aside>
 
             {/* Main Chat Area */}
             <div className="flex-1 flex flex-col min-h-0 bg-gray-50 dark:bg-gray-950 transition-colors duration-300">
                 {/* Chat Header */}
-                <div className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 px-6 py-4 transition-colors duration-300">
+                <div className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 px-6 py-4 transition-colors duration-300 flex justify-between items-center">
                     <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Conversational Log</h2>
+                    
+
                 </div>
 
                 {/* AI Prediction Banner */}
@@ -912,13 +1020,44 @@ export default function ChatPage() {
                                 })()}
 
                                 {message.order && (
-                                    <div className="mt-2 flex gap-2">
-                                        <span className="px-2 py-1 bg-indigo-100 text-indigo-700 text-xs font-medium rounded">
-                                            Refill placed by AI
-                                        </span>
-                                        <span className="px-2 py-1 bg-green-100 text-green-700 text-xs font-medium rounded">
-                                            Inventory updated
-                                        </span>
+                                    <div className="mt-3 space-y-3">
+                                        <div className="flex gap-2">
+                                            <span className="px-2 py-1 bg-indigo-100 text-indigo-700 text-xs font-medium rounded">
+                                                Refill placed by AI
+                                            </span>
+                                            <span className="px-2 py-1 bg-green-100 text-green-700 text-xs font-medium rounded">
+                                                Inventory updated
+                                            </span>
+                                        </div>
+                                        
+                                        {/* Explain My Medicine Card - Post-order explainability */}
+                                        <ExplainMedicineCard
+                                            medicines={message.order.items?.map((item: any) => ({
+                                                medicine_name: item.medicine_name || item.name,
+                                                strength: item.strength || item.dosage || '',
+                                                quantity: item.quantity || 1
+                                            })) || [{
+                                                medicine_name: 'Your Medicine',
+                                                strength: '',
+                                                quantity: 1
+                                            }]}
+                                            onLoadExplanation={async (medicineName: string) => {
+                                                const item = message.order.items?.find(
+                                                    (i: any) => (i.medicine_name || i.name) === medicineName
+                                                );
+                                                const res = await fetch('/api/medicine/explain', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({
+                                                        medicine_name: medicineName,
+                                                        strength: item?.strength || item?.dosage || '',
+                                                        quantity: item?.quantity || 1,
+                                                        frequency: null
+                                                    })
+                                                });
+                                                return await res.json();
+                                            }}
+                                        />
                                     </div>
                                 )}
 
@@ -982,21 +1121,8 @@ export default function ChatPage() {
                 {/* Input Area */}
                 {/* Input Area or Voice UI */}
                 <div className="bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 p-4 transition-colors duration-300 relative">
-                    {/* Floating Listening Status */}
-                    {isRecording && (
-                        <div className="absolute bottom-24 left-1/2 -translate-x-1/2 bg-white dark:bg-gray-800 rounded-full px-6 py-3 shadow-lg border border-gray-100 dark:border-gray-700 flex items-center gap-4 animate-in fade-in slide-in-from-bottom-4 duration-300 z-10">
-                            <div className="flex gap-1 items-end h-6">
-                                <div className="w-1 bg-indigo-500 rounded-full voice-wave h-3"></div>
-                                <div className="w-1 bg-indigo-500 rounded-full voice-wave h-full animation-delay-100"></div>
-                                <div className="w-1 bg-indigo-500 rounded-full voice-wave h-4 animation-delay-200"></div>
-                                <div className="w-1 bg-indigo-500 rounded-full voice-wave h-2 animation-delay-300"></div>
-                            </div>
-                            <div className="flex flex-col">
-                                <span className="text-indigo-600 dark:text-indigo-400 font-bold text-lg">Listening...</span>
-                                <span className="text-gray-500 dark:text-gray-400 text-xs">Speak naturally, AI is listening</span>
-                            </div>
-                        </div>
-                    )}
+                    {/* Premium Voice Wave Visualization */}
+                    <VoiceWave isListening={isRecording} subtitle="Speak naturally, AI is listening..." />
 
                     <form onSubmit={(e) => { e.preventDefault(); pendingPillImage ? sendMessageWithImage() : sendMessage(inputValue); }} className="flex flex-col gap-2">
                         {/* Pending Image Preview */}
@@ -1077,13 +1203,37 @@ export default function ChatPage() {
                             </div>
                         ) : (
                             <>
-                                <button
-                                    type="button"
-                                    onClick={startRecording}
-                                    className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
-                                >
-                                    <Mic className="w-5 h-5" />
-                                </button>
+                                {/* Real-time Voice Button (GPT-4o-realtime) */}
+                                <RealtimeVoiceButton
+                                    conversationId={conversationId || undefined}
+                                    onOrderPreview={(preview) => {
+                                        // Inject order preview into messages
+                                        const syntheticMessage: Message = {
+                                            id: Date.now().toString(),
+                                            role: 'assistant',
+                                            content: '🎤 Voice command received. Here\'s your order preview:',
+                                            timestamp: new Date(),
+                                            orderPreview: preview,
+                                        };
+                                        setMessages(prev => [...prev, syntheticMessage]);
+                                    }}
+                                    onCartUpdate={(cartData) => {
+                                        // Trigger cart refresh
+                                        console.log('Cart updated via voice:', cartData);
+                                    }}
+                                    onOrderConfirmed={(orderData) => {
+                                        // Trigger celebration and add confirmation message
+                                        setOrderCelebrationStatus('CONFIRMED');
+                                        const syntheticMessage: Message = {
+                                            id: Date.now().toString(),
+                                            role: 'assistant',
+                                            content: `🎉 Order confirmed via voice! Order ID: ${(orderData as any).order_id}`,
+                                            timestamp: new Date(),
+                                            order: orderData,
+                                        };
+                                        setMessages(prev => [...prev, syntheticMessage]);
+                                    }}
+                                />
 
                                 <button
                                     type="submit"
@@ -1150,14 +1300,167 @@ export default function ChatPage() {
                             </button>
                         </div>
 
-                        {/* Archive Conversation */}
-                        <button className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white">
-                            <ChevronRight className="w-4 h-4" />
-                            Archive Conversation
-                        </button>
+                        {/* Archive Conversation Section - ChatGPT style */}
+                        <div className="border-t border-gray-200 dark:border-gray-700 pt-3 mt-2">
+                            <button
+                                onClick={() => setIsArchiveExpanded(!isArchiveExpanded)}
+                                className="w-full flex items-center justify-between text-sm text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white"
+                            >
+                                <span className="flex items-center gap-2">
+                                    <ChevronRight className={`w-4 h-4 transition-transform ${isArchiveExpanded ? 'rotate-90' : ''}`} />
+                                    Archive Conversation
+                                </span>
+                                {archivedConversations.length > 0 && (
+                                    <span className="text-xs bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 px-1.5 py-0.5 rounded-full">
+                                        {archivedConversations.length}
+                                    </span>
+                                )}
+                            </button>
+
+                            {isArchiveExpanded && (
+                                <div className="mt-3 space-y-2">
+                                    {/* New Chat Button */}
+                                    <button
+                                        onClick={async () => {
+                                            if (!user?.uid || !selectedPatient?.patient_id) return;
+                                            const newId = await createNewConversation(user.uid, selectedPatient.patient_id);
+                                            setConversationId(newId);
+                                            setMessages([]);
+                                            setCurrentEntities(null);
+                                            setPrescriptionVerified(false);
+                                            prescriptionCalledRef.current.clear();
+                                        }}
+                                        className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors"
+                                    >
+                                        <span>+ New Chat</span>
+                                    </button>
+
+                                    {/* Archived Conversations List */}
+                                    {isLoadingArchive ? (
+                                        <div className="flex items-center justify-center py-4">
+                                            <div className="w-5 h-5 border-2 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin" />
+                                        </div>
+                                    ) : archivedConversations.length === 0 ? (
+                                        <p className="text-xs text-gray-500 dark:text-gray-400 text-center py-3">
+                                            No archived conversations yet
+                                        </p>
+                                    ) : (
+                                        <div className="max-h-48 overflow-y-auto space-y-1">
+                                            {archivedConversations.map((conv) => (
+                                                <div
+                                                    key={conv.id}
+                                                    className={`group relative flex items-center gap-1 p-2 rounded-lg text-xs transition-colors ${
+                                                        conv.id === conversationId
+                                                            ? 'bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700'
+                                                            : 'hover:bg-gray-50 dark:hover:bg-gray-700'
+                                                    }`}
+                                                >
+                                                    <button
+                                                        onClick={async () => {
+                                                            setConversationId(conv.id);
+                                                            setIsLoading(true);
+                                                            try {
+                                                                const firestoreMessages = await loadMessages(conv.id);
+                                                                const formattedMessages = firestoreMessages.map((msg, index) => ({
+                                                                    id: `hist-${index}`,
+                                                                    role: msg.sender === 'user' ? 'user' as const : 'assistant' as const,
+                                                                    content: msg.text,
+                                                                    timestamp: msg.timestamp?.toDate() || new Date(),
+                                                                    ...(msg.metadata || {})
+                                                                }));
+                                                                setMessages(formattedMessages);
+                                                                const persistedEntities = await getConversationEntities(conv.id);
+                                                                setCurrentEntities(persistedEntities || null);
+                                                            } catch (err) {
+                                                                console.error('[Archive] Failed to load:', err);
+                                                            } finally {
+                                                                setIsLoading(false);
+                                                            }
+                                                        }}
+                                                        className="flex-1 text-left min-w-0"
+                                                    >
+                                                        <p className="font-medium text-gray-900 dark:text-gray-100 truncate">
+                                                            {conv.title}
+                                                        </p>
+                                                        {conv.lastMessagePreview && (
+                                                            <p className="text-gray-500 dark:text-gray-400 truncate mt-0.5">
+                                                                {conv.lastMessagePreview}
+                                                            </p>
+                                                        )}
+                                                    </button>
+                                                    <button
+                                                        onClick={async (e) => {
+                                                            e.stopPropagation();
+                                                            if (confirm('Delete this conversation? This action cannot be undone.')) {
+                                                                try {
+                                                                    // Track deleted ID to prevent reappearing
+                                                                    console.log('[Delete] Adding to deleted set:', conv.id);
+                                                                    deletedConversationIdsRef.current.add(conv.id);
+                                                                    console.log('[Delete] Deleted set now contains:', Array.from(deletedConversationIdsRef.current));
+                                                                    
+                                                                    // Remove from UI immediately
+                                                                    setArchivedConversations(prev => prev.filter(c => c.id !== conv.id));
+                                                                    
+                                                                    // Delete from Firestore
+                                                                    await deleteConversation(conv.id);
+                                                                    console.log('[Delete] Firestore delete completed for:', conv.id);
+                                                                    
+                                                                    // If deleted current conversation, reset to a new one
+                                                                    if (conv.id === conversationId && user?.uid && selectedPatient?.patient_id) {
+                                                                        const newId = await createNewConversation(user.uid, selectedPatient.patient_id);
+                                                                        setConversationId(newId);
+                                                                        setMessages([]);
+                                                                        setCurrentEntities(null);
+                                                                        setPrescriptionVerified(false);
+                                                                        prescriptionCalledRef.current.clear();
+                                                                    }
+                                                                } catch (err) {
+                                                                    console.error('[Archive] Failed to delete:', err);
+                                                                }
+                                                            }
+                                                        }}
+                                                        className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded transition-all text-gray-400 hover:text-red-500 dark:hover:text-red-400"
+                                                        title="Delete conversation"
+                                                    >
+                                                        <Trash2 className="w-3.5 h-3.5" />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
                     </div>
                 </div>
             </aside>
+
+            <CartDrawer 
+                isOpen={isCartOpen} 
+                onClose={() => setIsCartOpen(false)} 
+                items={cartItems}
+                onCheckout={() => {
+                    setIsCartOpen(false);
+                    setIsCheckoutOpen(true);
+                }} 
+            />
+
+            <CheckoutModal
+                isOpen={isCheckoutOpen}
+                onClose={() => setIsCheckoutOpen(false)}
+                items={cartItems}
+                total={cartItems.reduce((sum, item) => sum + (item.unit_price * item.quantity), 0)}
+                onConfirm={async (method) => {
+                    // Send confirmation message to chat to trigger fulfillment
+                    const itemList = cartItems.map(i => `${i.quantity}x ${i.medicine_name}`).join(', ');
+                    const msg = `I confirm my order for: ${itemList}. Payment Method: ${method === 'upi' ? 'UPI' : 'COD'}.`;
+                    
+                    await sendMessage(msg);
+                    setIsCheckoutOpen(false);
+                    // Cart clearing handled by backend or manual clear here if needed, 
+                    // but let's let backend logic handle it for robustness in Phase 3.
+                }}
+            />
         </div>
     );
 }

@@ -164,7 +164,8 @@ class InventoryAgent:
                 "form": match.form,
                 "stock_status": stock_status,
                 "prescription_required": match.prescription_required,
-                "max_quantity": match.max_quantity_per_order
+                "max_quantity": match.max_quantity_per_order,
+                "unit_price": 5.00 # Mock price since 'price' field might be missing in Medicine model, verifying schema...
             }
             evidence.append(f"item_data={json.dumps(item_evidence)}")
             

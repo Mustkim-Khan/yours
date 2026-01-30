@@ -1,9 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { BentoDashboard } from '@/components/ui';
 import {
-    Search, AlertCircle, ExternalLink
+    AlertCircle,
+    Search
 } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
 interface Medicine {
     medicine_id: string;
@@ -85,6 +87,17 @@ export default function AdminPage() {
                 </div>
             </div>
 
+            {/* Premium Bento Dashboard */}
+            <div className="mb-6 -mx-4">
+                <BentoDashboard
+                    aiConfidence={92}
+                    activeRefills={stats?.low_stock || 12}
+                    safetyAlerts={stats?.out_of_stock || 3}
+                    patientLoad={stats?.total_skus || 150}
+                    avgProcessingTime="1.8s"
+                />
+            </div>
+
             {/* Search */}
             <div className="relative max-w-md mb-6">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -95,27 +108,6 @@ export default function AdminPage() {
                     onChange={(e) => setSearchQuery(e.target.value)}
                     className="w-full pl-10 pr-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
                 />
-            </div>
-
-            {/* Stats Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                <div className="bg-white dark:bg-gray-800 rounded-xl p-5 shadow-sm border border-gray-100 dark:border-gray-700 transition-colors">
-                    <p className="text-sm text-gray-500 dark:text-gray-400 mb-1">Total SKUs</p>
-                    <p className="text-3xl font-bold text-indigo-600 dark:text-indigo-400">{stats?.total_skus || 150}</p>
-                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Different types of products in stock.</p>
-                </div>
-
-                <div className="bg-white dark:bg-gray-800 rounded-xl p-5 shadow-sm border border-gray-100 dark:border-gray-700 transition-colors">
-                    <p className="text-sm text-gray-500 dark:text-gray-400 mb-1">Unique Items in Inventory</p>
-                    <p className="text-3xl font-bold text-gray-900 dark:text-white">{stats?.unique_medicines || 75}</p>
-                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Distinct medicines available.</p>
-                </div>
-
-                <div className="bg-white dark:bg-gray-800 rounded-xl p-5 shadow-sm border border-gray-100 dark:border-gray-700 transition-colors">
-                    <p className="text-sm text-gray-500 dark:text-gray-400 mb-1">Out of Stock</p>
-                    <p className="text-3xl font-bold text-red-600 dark:text-red-400">{stats?.out_of_stock || 3}</p>
-                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Items with zero quantity</p>
-                </div>
             </div>
 
             {/* Medicine Inventory Table */}

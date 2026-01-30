@@ -1,17 +1,18 @@
 'use client';
 
+import { useAuth } from '@/lib/AuthContext';
+import { Bot, LogOut, Moon, ShoppingCart, Sun } from 'lucide-react';
+import { useTheme } from 'next-themes';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Bot, Moon, Sun, LogOut } from 'lucide-react';
-import { useTheme } from 'next-themes';
 import { useEffect, useState } from 'react';
-import { useAuth, UserRole } from '@/lib/AuthContext';
 
 // Navigation items with role-based visibility
 // Customer: Chat only ("/")
 // Admin: Refills + Admin Dashboard
 const navItems = [
     { href: '/', label: 'Conversational Chat', roles: ['customer'] },
+    { href: '/cabinet', label: 'Medicine Cabinet', roles: ['customer'] },
     { href: '/orders', label: 'My Orders', roles: ['customer'] },
     { href: '/admin', label: 'Admin Inventory Dashboard', roles: ['admin'] },
     { href: '/admin/refills', label: 'Proactive Refill Alerts', roles: ['admin'] },
@@ -100,6 +101,15 @@ export default function Sidebar() {
 
             {/* Right side: User info, Theme Toggle, Logout */}
             <div className="flex items-center gap-3">
+                {/* Cart Trigger (Global) */}
+                <button
+                    onClick={() => document.dispatchEvent(new CustomEvent('open-cart'))}
+                    className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800 transition-colors"
+                    aria-label="Open Cart"
+                >
+                    <ShoppingCart className="w-5 h-5" />
+                </button>
+
                 {/* User email badge */}
                 {user && (
                     <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-gray-100 dark:bg-gray-800 rounded-full text-xs text-gray-600 dark:text-gray-300">

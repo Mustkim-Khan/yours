@@ -317,7 +317,8 @@ class FulfillmentAgent:
         preview_data: OrderPreviewData,
         patient_name: str,
         user_id: Optional[str] = None,
-        patient_phone: Optional[str] = None
+        patient_phone: Optional[str] = None,
+        payment_method: str = "COD"
     ) -> tuple[AgentOutput, OrderConfirmationData, str]:
         """
         Confirm an order from preview data.
@@ -366,7 +367,9 @@ class FulfillmentAgent:
             total_amount=total,
             status="CONFIRMED",
             created_at=datetime.now().isoformat(),
-            estimated_delivery="Tomorrow by 9:00 PM"
+            estimated_delivery="Tomorrow by 9:00 PM",
+            payment_method=payment_method,
+            payment_status="USER_CONFIRMED_UPI" if payment_method == "UPI" else "PENDING_COD"
         )
         
         # Build detailed summary message for ALL items
@@ -387,6 +390,7 @@ class FulfillmentAgent:
 **Subtotal:** ₹{subtotal:.2f}
 **Tax (5%):** ₹{tax:.2f}
 **Delivery:** ₹{delivery_fee:.2f}
+**Payment:** {payment_method} ({order_confirmation.payment_status})
 ━━━━━━━━━━━━━━━━━━━━━━
 **Total:** ₹{total:.2f}
 
@@ -404,11 +408,13 @@ class FulfillmentAgent:
             "delivery_fee": delivery_fee,
             "total_amount": total,
             "status": "CONFIRMED",
+            "payment_method": payment_method,
+            "payment_status": order_confirmation.payment_status,
             "created_at": datetime.now().isoformat(),
             "delivery_estimate": "Tomorrow by 9:00 PM"
         }
         
-        context = f"Order {order_id} confirmed. Total: ₹{total:.2f}. Delivery: Tomorrow."
+        context = f"Order {order_id} confirmed via {payment_method}. Status: {order_confirmation.payment_status}. Total: ₹{total:.2f}."
         reason = await self._generate_reasoning(context, "APPROVED")
         
         agent_output = AgentOutput(
